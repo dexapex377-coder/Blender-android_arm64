@@ -46,6 +46,8 @@ public:
     bool isShiftPressed=false;
     bool isCtrlPressed=false;
     bool isAltPressed=false;
+  /* Modifiers held by a toggle shortcut, OR'ed into getModifierKeys(). */
+    int32_t latched_meta_=0;
 private:
     void showHidenKeyboard(bool show,
             std::string p_existing_text,
@@ -70,6 +72,10 @@ public:
         return 0;
     }
     GHOST_TSuccess getModifierKeys(GHOST_ModifierKeys & /*keys*/) const override;
+
+    /** Press or release one modifier and leave it that way (toggle shortcuts). The latched bit
+     * survives motion events, whose meta state comes from Android and knows nothing about it. */
+    void setModifierLatched(int32_t keycode, bool pressed);
 
     GHOST_TSuccess getButtons(GHOST_Buttons & /*buttons*/) const override
     {

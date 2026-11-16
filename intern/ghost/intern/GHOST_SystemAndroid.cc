@@ -1428,8 +1428,54 @@ GHOST_SystemAndroid::GHOST_SystemAndroid(void *nativeWindow) : GHOST_System() { 
     }
     m_start_time = uint64_t(tv.tv_sec) * 1000 + tv.tv_usec / 1000;
     m_nativeWindow = nativeWindow;
+    latched_meta_ = 0;
     struct android_app *app = (struct android_app *) m_nativeWindow;
     app->onInputEvent = engine_handle_input;
+}
+
+void GHOST_SystemAndroid::setModifierLatched(int32_t keycode, bool pressed)
+{
+  int32_t bit = 0;
+  switch (keycode) {
+    case AKEYCODE_SHIFT_LEFT:
+    case AKEYCODE_SHIFT_RIGHT:
+      bit = AMETA_SHIFT_ON;
+      break;
+    case AKEYCODE_CTRL_LEFT:
+    case AKEYCODE_CTRL_RIGHT:
+      bit = AMETA_CTRL_ON;
+      break;
+    case AKEYCODE_ALT_LEFT:
+    case AKEYCODE_ALT_RIGHT:
+      bit = AMETA_ALT_ON;
+      break;
+    case AKEYCODE_META_LEFT:
+    case AKEYCODE_META_RIGHT:
+      bit = AMETA_META_ON;
+      break;
+    default:
+      return;
+  }
+
+  if (pressed) {
+    latched_meta_ |= bit;
+  }
+  else {
+    latched_meta_ &= ~bit;
+  }
+
+  /* Push the key event so Blender's keymap sees the modifier transition. */
+  GHOST_WindowAndroid *window = (GHOST_WindowAndroid *)getWindowManager()->getActiveWindow();
+  const GHOST_TKey key = convertKey(keycode, 0, 0);
+  if (key == GHOST_kKeyUnknown || window == nullptr) {
+    return;
+  }
+  GHOST_TabletData td;
+  pushEvent(new GHOST_EventKey(getMilliSeconds(),
+                               pressed ? GHOST_kEventKeyDown : GHOST_kEventKeyUp,
+                               window,
+                               key,
+                               false));
 }
 
 #include <codecvt>
@@ -2127,25 +2173,33 @@ GHOST_TSuccess GHOST_SystemAndroid::getModifierKeys(GHOST_ModifierKeys &keys) co
 
     struct android_app *app = (struct android_app *) m_nativeWindow;
     bool down = app->GetAsyncKeyState(0);
-    keys.set(GHOST_kModifierKeyLeftShift, down || isShiftPressed || m_pendingShift || m_heldShift);
+    const int32_t latched_state = latched_meta_;
+    keys.set(GHOST_kModifierKeyLeftShift,
+             down || isShiftPressed || m_pendingShift || m_heldShift ||
+             (latched_state & AMETA_SHIFT_ON) != 0);
     down = false;//(::GetAsyncKeyState(VK_RSHIFT)) != 0;
     keys.set(GHOST_kModifierKeyRightShift, down);
     bool down1 = down;
 
     down = app->GetAsyncKeyState(1);
-    keys.set(GHOST_kModifierKeyLeftAlt, down || isAltPressed || m_heldAlt);
+    keys.set(GHOST_kModifierKeyLeftAlt,
+             down || isAltPressed || m_heldAlt ||
+             (latched_state & AMETA_ALT_ON) != 0);
     down = false;//(::GetAsyncKeyState(VK_RMENU)) != 0;
     keys.set(GHOST_kModifierKeyRightAlt, down);
     bool down2 = down;
 
     down = app->GetAsyncKeyState(2);
-    keys.set(GHOST_kModifierKeyLeftControl, down || isCtrlPressed || m_pendingCtrl || m_heldCtrl);
+    keys.set(GHOST_kModifierKeyLeftControl,
+             down || isCtrlPressed || m_pendingCtrl || m_heldCtrl ||
+             (latched_state & AMETA_CTRL_ON) != 0);
     down = false;//(::GetAsyncKeyState(VK_RCONTROL)) != 0;
     keys.set(GHOST_kModifierKeyRightControl, down);
     bool down3 = down;
 
     down = false;//GetAsyncKeyState(VK_LWIN);
-    keys.set(GHOST_kModifierKeyLeftOS, down);
+    keys.set(GHOST_kModifierKeyLeftOS,
+             down || (latched_state & AMETA_META_ON) != 0);
     down = false;//(::GetAsyncKeyState(VK_RWIN)) != 0;
     keys.set(GHOST_kModifierKeyRightOS, down);
 
