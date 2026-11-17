@@ -10,6 +10,10 @@
 #include <cstdio>
 #include <cstring>
 
+#ifdef __ANDROID__
+#  include <android/log.h>
+#endif
+
 #include "DNA_action_types.h"
 #include "DNA_armature_types.h"
 #include "DNA_curve_types.h"
@@ -3216,6 +3220,13 @@ static int view3d_select_invoke(bContext *C, wmOperator *op, const wmEvent *even
   RNA_int_set_array(op->ptr, "location", event->mval);
 
   const int retval = view3d_select_exec(C, op);
+
+#ifdef __ANDROID__
+  __android_log_print(ANDROID_LOG_INFO, "OBL.SELECT",
+                      "ev=%d/%d mval=%d,%d retval=%d deselect_all=%d",
+                      event->type, event->val, UNPACK2(event->mval), retval,
+                      int(RNA_boolean_get(op->ptr, "deselect_all")));
+#endif
 
   return WM_operator_flag_only_pass_through_on_press(retval, event);
 }

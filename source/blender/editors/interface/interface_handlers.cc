@@ -10245,6 +10245,10 @@ static int ui_handle_menu_touch_scroll_event(bContext *C,
                                              const bool inside)
 {
   ARegion *region = menu->region;
+  /* A queued MOUSEMOVE can arrive after ui_popup_handler() freed the popup region. */
+  if (region == nullptr) {
+    return WM_UI_HANDLER_CONTINUE;
+  }
   uiBlock *block = static_cast<uiBlock *>(region->uiblocks.first);
   if (block == nullptr) {
     return WM_UI_HANDLER_CONTINUE;
@@ -10524,6 +10528,14 @@ static int ui_handle_menu_event(bContext *C,
                                 const bool is_parent_menu,
                                 const bool is_floating)
 {
+  /* 5.3 checks this before touching menu->region: a queued MOUSEMOVE can arrive
+   * after ui_popup_handler() already freed the popup region. */
+  if (menu == nullptr || menu->region == nullptr ||
+      BLI_listbase_is_empty(&menu->region->uiblocks))
+  {
+    return WM_UI_HANDLER_CONTINUE;
+  }
+
   uiBut *but;
   ARegion *region = menu->region;
   uiBlock *block = static_cast<uiBlock *>(region->uiblocks.first);
@@ -10573,7 +10585,12 @@ static int ui_handle_menu_event(bContext *C,
   }
 #endif
 
-  if (but && button_modal_state(but->active->state)) {
+  /* Match 5.3: a consumed MOUSEMOVE may have called button_activate_exit() above, which
+   * does MEM_SAFE_FREE(but->active). The cached 'but' is then stale, so the modal/leave
+   * checks below must not dereference it. This is the SIGSEGV on a fast menu swipe. */
+  if (retval != WM_UI_HANDLER_CONTINUE) {
+  }
+  else if (but && button_modal_state(but->active->state)) {
     if (block->flag & (UI_BLOCK_MOVEMOUSE_QUIT | UI_BLOCK_POPOVER)) {
       /* if a button is activated modal, always reset the start mouse
        * position of the towards mechanism to avoid losing focus,

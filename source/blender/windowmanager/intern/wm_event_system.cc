@@ -13,6 +13,10 @@
 #include <cstdlib>
 #include <cstring>
 
+#ifdef __ANDROID__
+#  include <android/log.h>
+#endif
+
 #include "AS_asset_library.h"
 
 #include "DNA_listBase.h"
@@ -4155,6 +4159,24 @@ void wm_event_do_handlers(bContext *C)
       {
         win->event_queue_check_click = false;
       }
+
+#ifdef __ANDROID__
+      /* Touch-selection diagnostics: a tap is synthesised as PRESS+RELEASE. If
+       * the PRESS is consumed here, KM_CLICK is never formed and keymaps that
+       * only bind CLICK cannot select. */
+      if (event->type == LEFTMOUSE &&
+          ELEM(event->val, KM_PRESS, KM_RELEASE, KM_CLICK, KM_DBL_CLICK))
+      {
+        __android_log_print(ANDROID_LOG_INFO, "OBL.EVT",
+                            "type=%d val=%d xy=%d,%d mval=%d,%d action=%x nothandled=%d "
+                            "checkclick=%d checkdrag=%d prev=%d/%d prevpress=%d,%d prevtime=%.3f",
+                            event->type, event->val, UNPACK2(event->xy), UNPACK2(event->mval),
+                            int(action), int(wm_action_not_handled(action)),
+                            int(win->event_queue_check_click), int(win->event_queue_check_drag),
+                            event->prev_type, event->prev_val,
+                            UNPACK2(event->prev_press_xy), event->prev_press_time);
+      }
+#endif
 
       /* If the drag even was handled, don't attempt to keep re-handing the same
        * drag event on every cursor motion, see: #87511. */

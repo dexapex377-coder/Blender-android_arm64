@@ -1044,11 +1044,23 @@ bool processButtonEvent(struct android_app *app, AInputEvent *event) {
     bool sculptArcCollapsed = app->GetAsyncKeyState(103);
     bool inSculptArc = sculptArcActive &&
                        sculpt_arc_hit_test(width, height, msgPosX, msgPosY, sculptArcCollapsed);
-    GHOST_TabletData td;
-    td.Xtilt=msgPosX;
-    td.Ytilt=msgPosY;
-    td.Pressure=pressure;
-    td.Active=GHOST_TTabletMode::GHOST_kTabletModeStylus;
+    /* Match 5.3: a finger is not a stylus. Marking every touch as a stylus with
+     * tilt = pixel coordinates made the window manager use the tablet drag
+     * threshold (10px instead of 3px) and set is_motion_absolute, which changes
+     * gizmo handling and can swallow the click that selects an object. */
+    GHOST_TabletData td = GHOST_TABLET_DATA_NONE;
+    if (toolType == AMOTION_EVENT_TOOL_TYPE_STYLUS ||
+        toolType == AMOTION_EVENT_TOOL_TYPE_ERASER)
+    {
+      td.Active = (toolType == AMOTION_EVENT_TOOL_TYPE_STYLUS) ?
+                      GHOST_kTabletModeStylus :
+                      GHOST_kTabletModeEraser;
+      td.Pressure = AMotionEvent_getPressure(event, 0);
+      const float tilt = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_TILT, 0);
+      const float orient = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_ORIENTATION, 0);
+      td.Xtilt = std::sin(orient) * (tilt / float(M_PI_2));
+      td.Ytilt = -std::cos(orient) * (tilt / float(M_PI_2));
+    }
     uint64_t currentTime = system->getMilliSeconds();
 
     /* A finger's press is withheld until the touch is known to be a tap, a drag or
@@ -1060,8 +1072,8 @@ bool processButtonEvent(struct android_app *app, AInputEvent *event) {
      * sculpt arc, grid move, the top-left settings button).
      *
      * debug.blender.gestures only decides what a DRAG past the slop becomes: a pan
-     * when on, the ordinary left drag when off. A held finger turns into a right
-     * click only when it is on. */
+     * when on, the ordinary left drag when off. A held finger always becomes a
+     * right click, as in 5.3 (viewport context menu and tool variants). */
     const bool finger_touch = (toolType == AMOTION_EVENT_TOOL_TYPE_FINGER);
     const bool top_left_press = checkClickPos(width, height, msgPosX, msgPosY) &&
                                 (21 != window->m_shpeType);
@@ -1696,11 +1708,10 @@ void GHOST_SystemAndroid::touchCancelPending()
  * approached slowly, and half a second of that must not become a context menu. */
 void GHOST_SystemAndroid::touchLongPressCheck()
 {
-    /* A held finger is only a right-click when the gesture option is on; with it
-     * off the pending press must survive so the release still acts as a tap. */
-    if (!GHOST_android_one_finger_pan()) {
-        return;
-    }
+    /* Match 5.3: any finger held still becomes a right-click, independently of
+     * debug.blender.gestures. That flag only decides whether a drag after the slop
+     * is trackpad panning or a left drag. Gating the long-press on it disabled the
+     * viewport context menu and the toolbar tool-variant popups by default. */
     if (!m_touchPending) {
         return;
     }
@@ -1718,7 +1729,7 @@ void GHOST_SystemAndroid::touchLongPressCheck()
     if (window == nullptr) {
         return;
     }
-    GHOST_TabletData td;
+    GHOST_TabletData td = {};
     m_touchButtonDown = true;
     m_touchButtonMask = GHOST_kButtonMaskRight;
     pushEvent(new GHOST_EventButton(getMilliSeconds(),
