@@ -1107,6 +1107,11 @@ bool processButtonEvent(struct android_app *app, AInputEvent *event) {
                     system->m_touchPan1LastY = system->m_touchDownY;
                 }
                 else {
+                    /* Rewind the cached cursor too, not just the event: as long as a
+                     * window is not active the window manager reads the position from
+                     * GHOST_GetCursorPosition() when it delivers the press. */
+                    system->m_x = system->m_touchDownX;
+                    system->m_y = system->m_touchDownY;
                     system->pushEvent(new GHOST_EventCursor(currentTime,
                                                             GHOST_kEventCursorMove,
                                                             window,
@@ -1121,6 +1126,8 @@ bool processButtonEvent(struct android_app *app, AInputEvent *event) {
                                                             window,
                                                             mask,
                                                             td));
+                    system->m_x = msgPosX;
+                    system->m_y = msgPosY;
                     system->pushEvent(new GHOST_EventCursor(
                             currentTime, GHOST_kEventCursorMove, window, msgPosX, msgPosY, td));
                 }
@@ -1154,6 +1161,11 @@ bool processButtonEvent(struct android_app *app, AInputEvent *event) {
              * can slip between them and cancel the click. */
             if (system->m_touchPending) {
                 system->m_touchPending = false;
+                /* processButtonEvent() resets the cursor cache at the start of every
+                 * touch event. Restore it before the synthetic press: Press/Release
+                 * carry no coordinates, so the window manager reads them from here. */
+                system->m_x = msgPosX;
+                system->m_y = msgPosY;
                 system->pushEvent(new GHOST_EventCursor(
                         currentTime, GHOST_kEventCursorMove, window, msgPosX, msgPosY, td));
                 const GHOST_TButton mask = GHOST_SystemAndroid::currentButton(app);

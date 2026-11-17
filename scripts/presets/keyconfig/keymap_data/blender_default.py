@@ -826,6 +826,9 @@ def km_view2d(_params):
         ("view2d.pan", {"type": 'MIDDLEMOUSE', "value": 'PRESS'}, None),
         ("view2d.pan", {"type": 'MIDDLEMOUSE', "value": 'PRESS', "shift": True}, None),
         ("view2d.pan", {"type": 'TRACKPADPAN', "value": 'ANY'}, None),
+        # Touch: one finger drag scrolls headers, tool headers and tab strips. CLICK_DRAG
+        # keeps a tap available for the widget underneath, as in "User Interface" below.
+        ("view2d.pan", {"type": 'LEFTMOUSE', "value": 'CLICK_DRAG'}, None),
         ("view2d.scroll_right", {"type": 'WHEELDOWNMOUSE', "value": 'PRESS', "ctrl": True}, None),
         ("view2d.scroll_left", {"type": 'WHEELUPMOUSE', "value": 'PRESS', "ctrl": True}, None),
         ("view2d.scroll_down", {"type": 'WHEELDOWNMOUSE', "value": 'PRESS', "shift": True}, None),
@@ -1107,7 +1110,7 @@ def km_property_editor(_params):
         ("buttons.start_filter", {"type": 'F', "value": 'PRESS', "ctrl": True}, None),
         ("buttons.clear_filter", {"type": 'F', "value": 'PRESS', "alt": True}, None),
         # Modifier panels
-        ("object.modifier_set_active", {"type": 'LEFTMOUSE', "value": 'PRESS'}, None),
+        ("object.modifier_set_active", {"type": 'LEFTMOUSE', "value": 'CLICK'}, None),
         ("object.modifier_remove", {"type": 'X', "value": 'PRESS'}, {"properties": [("report", True)]}),
         ("object.modifier_remove", {"type": 'DEL', "value": 'PRESS'}, {"properties": [("report", True)]}),
         ("object.modifier_copy", {"type": 'D', "value": 'PRESS', "shift": True}, None),

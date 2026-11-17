@@ -2005,6 +2005,30 @@ static int ui_panel_drag_collapse_handler(bContext *C, const wmEvent *event, voi
   return retval;
 }
 
+#ifdef __ANDROID__
+#  define PANEL_TOUCH_SCROLL true
+#else
+#  define PANEL_TOUCH_SCROLL false
+#endif
+
+/**
+ * Android: a panel header must not collapse on PRESS. Most of a panel region is
+ * header, so a finger drag starting there has to stay unconsumed and reach the
+ * region keymap, which scrolls the panel. The window manager only turns a
+ * release into KM_CLICK when the drag threshold was never crossed.
+ */
+static bool ui_panel_header_event_is_activate(const wmEvent *event)
+{
+#ifdef __ANDROID__
+  if (event->type == LEFTMOUSE) {
+    return event->val == KM_CLICK;
+  }
+#else
+  UNUSED_VARS(event);
+#endif
+  return true;
+}
+
 static void ui_panel_drag_collapse_handler_add(const bContext *C, const bool was_open)
 {
   wmWindow *win = CTX_wm_window(C);
@@ -2083,7 +2107,7 @@ static void ui_handle_panel_header(const bContext *C,
 
     SET_FLAG_FROM_TEST(panel->flag, !UI_panel_is_closed(panel), PNL_CLOSED);
 
-    if (event_type == LEFTMOUSE) {
+    if (event_type == LEFTMOUSE && !PANEL_TOUCH_SCROLL) {
       ui_panel_drag_collapse_handler_add(C, UI_panel_is_closed(panel));
     }
 
@@ -2298,8 +2322,9 @@ int ui_handler_panel_region(bContext *C,
     return WM_UI_HANDLER_CONTINUE;
   }
 
-  /* We only use KM_PRESS events in this function, so it's simpler to return early. */
-  if (event->val != KM_PRESS) {
+  /* Android: KM_CLICK has to reach the panel-header path as well, so a tap
+   * still collapses a header even though the PRESS was left for the pan. */
+  if (!ELEM(event->val, KM_PRESS, KM_CLICK)) {
     return WM_UI_HANDLER_CONTINUE;
   }
 
@@ -2312,7 +2337,7 @@ int ui_handler_panel_region(bContext *C,
 
   /* Handle category tabs. */
   if (UI_panel_category_is_visible(region)) {
-    if (event->type == LEFTMOUSE) {
+    if (event->type == LEFTMOUSE && event->val == KM_CLICK) {
       PanelCategoryDyn *pc_dyn = panel_categories_find_mouse_over(region, event);
       if (pc_dyn) {
         UI_panel_category_active_set(region, pc_dyn->idname);
@@ -2321,7 +2346,8 @@ int ui_handler_panel_region(bContext *C,
         /* Reset scroll to the top (#38348). */
         UI_view2d_offset(&region->v2d, -1.0f, 1.0f);
 
-        retval = WM_UI_HANDLER_BREAK;
+        /* Do not BREAK: the click-drag must reach the region keymap so the
+         * Properties side tabs and the Active Tool tab can be scrolled. */
       }
     }
     else if (((event->type == EVT_TABKEY) && (event->modifier & KM_CTRL)) ||
@@ -2378,7 +2404,9 @@ int ui_handler_panel_region(bContext *C,
 
     if (mouse_state == PANEL_MOUSE_INSIDE_HEADER) {
       /* All mouse clicks inside panel headers should return in break. */
-      if (ELEM(event->type, EVT_RETKEY, EVT_PADENTER, LEFTMOUSE)) {
+      if (ELEM(event->type, EVT_RETKEY, EVT_PADENTER, LEFTMOUSE) &&
+          ui_panel_header_event_is_activate(event))
+      {
         retval = WM_UI_HANDLER_BREAK;
         ui_handle_panel_header(
             C, block, mx, event->type, event->modifier & KM_CTRL, event->modifier & KM_SHIFT);

@@ -708,6 +708,19 @@ static void wm_window_ghostwindow_add(wmWindowManager *wm,
 
     wm_window_ensure_eventstate(win);
 
+#ifdef __ANDROID__
+    /* Android's native-activity glue never turns APP_CMD_GAINED_FOCUS into a
+     * GHOST_kEventWindowActivate event, so win->active stays 0. Every button
+     * event is then treated as "entering an inactive window" and Blender
+     * rewrites event.xy from GHOST_GetCursorPosition(). A finger's press is
+     * emitted in ACTION_UP, where that cursor cache is invalid, so press and
+     * release landed at different Y coordinates and no KM_CLICK was formed:
+     * tapping an object in the viewport did not select it. Touch already
+     * supplies accurate CursorMove events, so mark the window active here. */
+    wm->winactive = win;
+    win->active = 1;
+#endif
+
     /* store actual window size in blender window */
     GHOST_RectangleHandle bounds = GHOST_GetClientBounds(win->ghostwin);
 
