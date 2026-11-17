@@ -2905,6 +2905,18 @@ static bool ed_object_select_pick(bContext *C,
     ED_outliner_select_sync_from_pose_bone_tag(C);
   }
 
+#ifdef __ANDROID__
+  __android_log_print(ANDROID_LOG_INFO, "OBL.PICK",
+                      "mval=%d,%d hits=%d basact=%s sel=%d handled=%d found=%d "
+                      "passthrough=%d deselect_all=%d changed=%d/%d/%d",
+                      UNPACK2(mval), gpu ? gpu->hits : -1,
+                      basact ? basact->object->id.name : "-",
+                      basact ? int(basact->flag & BASE_SELECTED) : -1,
+                      int(handled), int(found), int(params->select_passthrough),
+                      int(params->deselect_all), int(changed_object),
+                      int(changed_pose), int(changed_track));
+#endif
+
   if (gpu != nullptr) {
     MEM_freeN(gpu);
   }
