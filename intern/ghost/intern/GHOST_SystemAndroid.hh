@@ -194,20 +194,43 @@ public:
 
     std::queue<KeyEventStatus> m_keyEventStatus;
 
-    /* Multi-touch gesture state (tracked across input events). */
-    int m_mtFingerCount = 0;
-    int m_mtPointerCount = 0;
-    uint64_t m_mtStartTime = 0;
-    float m_mtStartDist = 0.0f;
-    float m_mtPrevDist = 0.0f;
-    bool m_mtGestureHandled = false;
-    bool m_mtActive = false;
-    float m_mtPrevCenterX = 0.0f;
-    float m_mtPrevCenterY = 0.0f;
-    bool m_mtDragActive = false;
-    bool m_mtCleanupDone = false;
-    bool m_mtOrbitMode = false;
-    uint64_t m_mtFirstFingerDownTime = 0;
+  /* Two-finger gesture state: pan or zoom, decided once and then held for the
+   * rest of the gesture. Both used to be emitted every frame, so the jitter
+   * between two fingers zoomed the view while they were being dragged to
+   * scroll it. */
+  bool m_gestureActive = false;
+  float m_gesturePrevX = 0.0f, m_gesturePrevY = 0.0f, m_gesturePrevDist = 0.0f;
+  float m_gestureStartX = 0.0f, m_gestureStartY = 0.0f, m_gestureStartDist = 0.0f;
+  enum class GestureKind { Undecided, Pan, Zoom };
+  GestureKind m_gestureKind = GestureKind::Undecided;
+
+  /* Three fingers emulate a Shift+middle-mouse drag, Blender's "Move the view"
+   * binding. Two fingers already pan (a trackpad pan is what the 3D view maps
+   * to a rotate), so the third finger buys the viewport a dedicated pan. */
+  bool m_panActive = false;
+  /* Whether the synthetic Shift that turns that middle-mouse drag into a pan is
+   * held. Also reported by getModifierKeys(); the synthetic key event is what the
+   * window manager actually reads, this keeps GHOST's state consistent. */
+  bool m_gestureShift = false;
+
+  /* The button the single-finger path actually emitted. A two-finger gesture has
+   * to release exactly that one, which is not necessarily the left button: the
+   * floating on-screen buttons can turn a finger into middle/right. */
+  bool m_touchButtonDown = false;
+  GHOST_TButton m_touchButtonMask = GHOST_kButtonMaskLeft;
+
+  /* One finger drag reported as a pan, behind debug.blender.gestures. */
+  bool m_fingerGestureActive = false;
+  bool m_touchPending = false;
+  bool m_touchPan1Active = false;
+  int32_t m_touchPan1LastX = 0, m_touchPan1LastY = 0;
+  uint64_t m_touchDownTime = 0;
+  int32_t m_touchDownX = 0, m_touchDownY = 0;
+
+  void touchLongPressCheck();
+  void touchCancelPending();
+  void touchSendShift(bool down);
+  void touchEndPan();
 
   /* Scroll mode: single-finger drag sends wheel events instead of LEFT drag. */
   bool m_scrollMode = false;

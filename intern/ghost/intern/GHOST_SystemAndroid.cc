@@ -1,5 +1,6 @@
 #include "GHOST_SystemAndroid.hh"
 #include "android_native_app_glue.h"
+#include "GHOST_AndroidMemoryTier.hh"
 #include "GHOST_EventCursor.hh"
 #include "GHOST_WindowAndroid.hh"
 #include "GHOST_WindowManager.hh"
@@ -35,6 +36,19 @@
  */
 
 #define OBL_LOG_TAG "Blender.OBL"
+
+/* How far a two-finger gesture must travel, or how much the fingers must
+ * spread, before it is called a pan or a zoom. Below this nothing is emitted:
+ * the first frames of a two-finger touch always carry some of both, and acting
+ * on them is what made every attempt to scroll a panel zoom it instead. */
+static constexpr float GESTURE_DECIDE_PX = 24.0f;
+/* Hold a finger this long without moving to get a right-click. */
+static constexpr uint64_t TOUCH_LONG_PRESS_MS = 500;
+/* Movement past this (in pixels) makes the press a left-button drag. */
+static constexpr int32_t TOUCH_SLOP_PX = 48;
+/* Movement past this means the finger is going somewhere, so a held press must
+ * not be turned into a right click while it travels. */
+static constexpr int32_t TOUCH_LONG_PRESS_MOVE_PX = 16;
 
 static FILE *obl_log_fp = NULL;
 static pthread_mutex_t obl_log_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -1036,6 +1050,101 @@ bool processButtonEvent(struct android_app *app, AInputEvent *event) {
     td.Pressure=pressure;
     td.Active=GHOST_TTabletMode::GHOST_kTabletModeStylus;
     uint64_t currentTime = system->getMilliSeconds();
+
+    /* One finger drag as a pan, and a held finger as a right-click, behind
+     * debug.blender.gestures. Off by default, so nothing changes until asked for.
+     * The press is withheld until the touch is known to be a tap, a drag or a
+     * hold; the legacy path below keeps its immediate press for everything else
+     * (stylus, sculpt arc, grid move, the top-left settings button). */
+    const bool finger_touch = (toolType == AMOTION_EVENT_TOOL_TYPE_FINGER);
+    const bool top_left_press = checkClickPos(width, height, msgPosX, msgPosY) &&
+                                (21 != window->m_shpeType);
+    const bool new_finger_active = system->m_fingerGestureActive;
+    if (finger_touch && GHOST_android_one_finger_pan() && !checkMove && !inSculptArc &&
+        !top_left_press && (motionaction == AMOTION_EVENT_ACTION_DOWN || new_finger_active))
+    {
+        system->m_lastDownx = msgPosX;
+        system->m_lastDowny = msgPosY;
+
+        if (motionaction == AMOTION_EVENT_ACTION_DOWN) {
+            system->m_isTouchDown = true;
+            system->m_fingerGestureActive = true;
+            system->m_touchPending = true;
+            system->m_touchDownTime = currentTime;
+            system->m_touchDownX = int32_t(msgPosX);
+            system->m_touchDownY = int32_t(msgPosY);
+            system->m_x = msgPosX;
+            system->m_y = msgPosY;
+            system->pushEvent(new GHOST_EventCursor(
+                    currentTime, GHOST_kEventCursorMove, window, msgPosX, msgPosY, td));
+        }
+        else if (motionaction == AMOTION_EVENT_ACTION_MOVE) {
+            system->m_x = msgPosX;
+            system->m_y = msgPosY;
+            system->pushEvent(new GHOST_EventCursor(
+                    currentTime, GHOST_kEventCursorMove, window, msgPosX, msgPosY, td));
+
+            /* Past the slop this is a drag, which the flag reports as a pan instead
+             * of a left button drag. No button is sent at all: MOUSEPAN means
+             * "scroll" in a panel and "orbit" in the viewport purely through the
+             * keymap, so the same finger does the right thing in both. */
+            if (system->m_touchPending &&
+                (fabsf(msgPosX - system->m_touchDownX) > TOUCH_SLOP_PX ||
+                 fabsf(msgPosY - system->m_touchDownY) > TOUCH_SLOP_PX))
+            {
+                system->m_touchPending = false;
+                system->m_touchPan1Active = true;
+                system->m_touchPan1LastX = system->m_touchDownX;
+                system->m_touchPan1LastY = system->m_touchDownY;
+            }
+            if (system->m_touchPan1Active) {
+                const int32_t dx = int32_t(msgPosX) - system->m_touchPan1LastX;
+                const int32_t dy = int32_t(msgPosY) - system->m_touchPan1LastY;
+                if (dx != 0 || dy != 0) {
+                    system->m_touchPan1LastX = int32_t(msgPosX);
+                    system->m_touchPan1LastY = int32_t(msgPosY);
+                    system->pushEvent(new GHOST_EventTrackpad(currentTime,
+                                                              window,
+                                                              GHOST_kTrackpadEventScroll,
+                                                              int32_t(msgPosX),
+                                                              int32_t(msgPosY),
+                                                              dx,
+                                                              dy,
+                                                              /* Direct touch is natural
+                                                               * scrolling. */
+                                                              true));
+                }
+            }
+        }
+        else if (motionaction == AMOTION_EVENT_ACTION_UP ||
+                 motionaction == AMOTION_EVENT_ACTION_CANCEL)
+        {
+            system->m_isTouchDown = false;
+            system->m_fingerGestureActive = false;
+            /* Released before the long-press elapsed: a plain tap, press and
+             * release at the same point. */
+            if (system->m_touchPending) {
+                system->m_touchPending = false;
+                const GHOST_TButton mask = GHOST_SystemAndroid::currentButton(app);
+                system->m_touchButtonDown = true;
+                system->m_touchButtonMask = mask;
+                system->pushEvent(new GHOST_EventButton(
+                        currentTime, GHOST_TEventType::GHOST_kEventButtonDown, window, mask, td));
+            }
+            /* A one finger pan never sent a button, so there is nothing to release. */
+            system->m_touchPan1Active = false;
+            if (system->m_touchButtonDown) {
+                system->pushEvent(new GHOST_EventButton(currentTime,
+                                                        GHOST_TEventType::GHOST_kEventButtonUp,
+                                                        window,
+                                                        system->m_touchButtonMask,
+                                                        td));
+                system->m_touchButtonDown = false;
+            }
+        }
+        return 1;
+    }
+
     if (motionaction == AMOTION_EVENT_ACTION_DOWN) {
         system->m_isTouchDown = true;
         system->m_lastDownx = msgPosX;
@@ -1062,9 +1171,12 @@ bool processButtonEvent(struct android_app *app, AInputEvent *event) {
                 new GHOST_EventCursor(currentTime, GHOST_kEventCursorMove, window, msgPosX,
                                       msgPosY, td));
         if (!checkMove && !inSculptArc) {
+            const GHOST_TButton mask = GHOST_SystemAndroid::currentButton(app);
+            system->m_touchButtonDown = true;
+            system->m_touchButtonMask = mask;
             system->pushEvent(
                     new GHOST_EventButton(currentTime, GHOST_TEventType::GHOST_kEventButtonDown,
-                                          window, GHOST_SystemAndroid::currentButton(app), td));
+                                          window, mask, td));
             system->m_sculptArcDownSuppressed = false;
         }
         else {
@@ -1091,10 +1203,14 @@ bool processButtonEvent(struct android_app *app, AInputEvent *event) {
         bool suppressUp = checkMove || system->m_sculptArcDownSuppressed;
         system->m_sculptArcDownSuppressed = false;
         if (!suppressUp) {
+            const GHOST_TButton mask = system->m_touchButtonDown ?
+                                           system->m_touchButtonMask :
+                                           GHOST_SystemAndroid::currentButton(app);
             system->pushEvent(
                     new GHOST_EventButton(currentTime, GHOST_TEventType::GHOST_kEventButtonUp,
-                                          window, GHOST_SystemAndroid::currentButton(app), td));
+                                          window, mask, td));
         }
+        system->m_touchButtonDown = false;
         for (int i = 3; i < 5; i++) {
             bool check = app->GetAsyncKeyState(i) == 1;
             if (check) {
@@ -1159,167 +1275,164 @@ static int32_t engine_handle_input(struct android_app *app, AInputEvent *event) 
                     uint32_t pointerCount = AMotionEvent_getPointerCount(event);
                     uint64_t now = system ? system->getMilliSeconds() : 0;
 
-                    /* ---- Multi-touch gesture interception ---- */
-                    if (pointerCount >= 2 || system->m_mtActive) {
-                        /* Initialize state on first multi-touch event. */
-                        if (!system->m_mtActive) {
-                            system->m_mtActive = true;
-                            system->m_mtFingerCount = pointerCount;
-                            system->m_mtStartTime = now;
-                            system->m_mtGestureHandled = false;
-                            system->m_mtDragActive = false;
-                            system->m_mtCleanupDone = false;
-                             system->m_mtOrbitMode = false;
-                             system->m_mtStartDist = 0.0f;
-                             system->m_mtPrevDist = 0.0f;
-                             system->m_mtPrevCenterX = 0.0f;
-                             system->m_mtPrevCenterY = 0.0f;
+                    /* ---- Two and three finger navigation ---- */
+                    GHOST_WindowAndroid *win =
+                            (GHOST_WindowAndroid *)system->getWindowManager()->getActiveWindow();
 
-                             if (pointerCount >= 2) {
-                                float x0 = AMotionEvent_getX(event, 0);
-                                float y0 = AMotionEvent_getY(event, 0);
-                                float x1 = AMotionEvent_getX(event, 1);
-                                float y1 = AMotionEvent_getY(event, 1);
-                                float dx = x0 - x1;
-                                float dy = y0 - y1;
-                                system->m_mtStartDist = sqrtf(dx * dx + dy * dy);
-                                system->m_mtPrevDist = system->m_mtStartDist;
-                                system->m_mtPrevCenterX = (x0 + x1) * 0.5f;
-                                system->m_mtPrevCenterY = (y0 + y1) * 0.5f;
-
-                                /* Detect hold+tap: first finger held >200ms before second finger. */
-                                uint64_t firstFingerElapsed = now - system->m_mtFirstFingerDownTime;
-                                if (firstFingerElapsed > 200) {
-                                    system->m_mtOrbitMode = true;
-                                    system->m_mtDragActive = true;
-                                    GHOST_WindowAndroid *win = (GHOST_WindowAndroid *)system->getWindowManager()->getActiveWindow();
-                                    if (win) {
-                                        GHOST_TabletData td;
-                                        /* Cancel first finger's left mouse DOWN. */
-                                        system->pushEvent(new GHOST_EventCursor(now, GHOST_kEventCursorMove, win, x0, y0, td));
-                                        system->pushEvent(new GHOST_EventButton(now, GHOST_kEventButtonUp, win, GHOST_kButtonMaskLeft, td));
-                                        /* Start middle mouse orbit at centroid. */
-                                        float cx = (x0 + x1) * 0.5f;
-                                        float cy = (y0 + y1) * 0.5f;
-                                        system->pushEvent(new GHOST_EventCursor(now, GHOST_kEventCursorMove, win, cx, cy, td));
-                                        system->pushEvent(new GHOST_EventButton(now, GHOST_kEventButtonDown, win, GHOST_kButtonMaskMiddle, td));
-                                    }
-                                } else {
-                                    /* Cancel the first finger's pending LEFT DOWN so zoom works cleanly
-                                       (LEFT held + scroll = brush in Sculpt). Right-click is via floating button only. */
-                                    uint64_t firstFingerAge = now - system->m_mtFirstFingerDownTime;
-                                    if (firstFingerAge < 5000 && firstFingerAge > 5) {
-                                        GHOST_WindowAndroid *win = (GHOST_WindowAndroid *)system->getWindowManager()->getActiveWindow();
-                                        if (win) {
-                                            GHOST_TabletData td;
-                                            system->pushEvent(new GHOST_EventCursor(now, GHOST_kEventCursorMove, win, x0, y0, td));
-                                            system->pushEvent(new GHOST_EventButton(now, GHOST_kEventButtonUp, win, GHOST_kButtonMaskLeft, td));
-                                        }
-                                    }
-                                }
-                            }
+                    /* Three fingers: pan the viewport. Shift goes down before the
+                     * middle button, because a keymap item is matched against the
+                     * modifiers the press itself carries. Finish as soon as one of
+                     * the three is lifted, so a following two-finger gesture starts
+                     * from clean state. */
+                    if (win && pointerCount >= 3) {
+                        if (!system->m_panActive) {
+                            system->touchCancelPending();
+                            system->m_touchPan1Active = false;
                         }
+                        float cx = (AMotionEvent_getX(event, 0) +
+                                    AMotionEvent_getX(event, 1) +
+                                    AMotionEvent_getX(event, 2)) /
+                                   3.0f;
+                        float cy = (AMotionEvent_getY(event, 0) +
+                                    AMotionEvent_getY(event, 1) +
+                                    AMotionEvent_getY(event, 2)) /
+                                   3.0f;
+                        GHOST_TabletData td;
+                        system->pushEvent(new GHOST_EventCursor(
+                                now, GHOST_kEventCursorMove, win, cx, cy, td));
 
-                        system->m_mtPointerCount = pointerCount;
-                        if (pointerCount > system->m_mtFingerCount) {
-                            system->m_mtFingerCount = pointerCount;
-                        }
-
-                        float dist = 0.0f;
-
-                        /* Current distance between first two pointers. */
-                        if (pointerCount >= 2 && !system->m_mtOrbitMode) {
-                            float dx = AMotionEvent_getX(event, 0) - AMotionEvent_getX(event, 1);
-                            float dy = AMotionEvent_getY(event, 0) - AMotionEvent_getY(event, 1);
-                            dist = sqrtf(dx * dx + dy * dy);
-                        }
-
-                        /* ----- GESTURE PROCESSING ----- */
-                        system->m_mtGestureHandled = false;  /* Allow new gesture per event. */
-
+                        if (actionMasked == AMOTION_EVENT_ACTION_POINTER_UP ||
+                            actionMasked == AMOTION_EVENT_ACTION_UP ||
+                            actionMasked == AMOTION_EVENT_ACTION_CANCEL)
                         {
-                            GHOST_WindowAndroid *win = (GHOST_WindowAndroid *)system->getWindowManager()->getActiveWindow();
-                            if (win) {
-                                /* ORBIT MODE: send cursor on every move event for smooth rotation. */
-                                if (system->m_mtOrbitMode && pointerCount >= 1 && actionMasked == AMOTION_EVENT_ACTION_MOVE) {
-                                    float fx = AMotionEvent_getX(event, 0);
-                                    float fy = AMotionEvent_getY(event, 0);
-                                    GHOST_TabletData td;
-                                    system->pushEvent(new GHOST_EventCursor(now, GHOST_kEventCursorMove, win, fx, fy, td));
-                                    system->m_mtGestureHandled = true;  /* Prevent zoom in same event. */
-                                }
-
-                                /* 2-finger pinch → Trackpad Zoom (smooth).
-                                 * Uses GHOST_kEventTrackpad with Magnify, which gets coalesced
-                                 * by WM's wm_event_add_trackpad and processed as MOUSEZOOM
-                                 * (smooth zoom via view3d.zoom or view3d.dolly). */
-                                if (!system->m_mtGestureHandled && !system->m_mtOrbitMode && pointerCount >= 2) {
-                                    float diff = dist - system->m_mtPrevDist;
-                                    if (fabs(diff) >= 5.0f) {
-                                        int step = (diff > 0) ? 1 : -1;
-                                        OBL_log("OBL.ZOOM",
-                                            "ZOOM TRIGGERED via Trackpad! step=%d", step);
-                                        system->pushEvent(new GHOST_EventTrackpad(
-                                            now, win,
-                                            GHOST_kTrackpadEventMagnify,
-                                            (int)AMotionEvent_getX(event, 0),
-                                            (int)AMotionEvent_getY(event, 0),
-                                            step * 10, /* deltaX: zoom amount */
-                                            0,          /* deltaY: unused for magnify */
-                                            false));    /* isDirectionInverted */
-                                        system->m_mtPrevDist += step * 5.0f;
-                                        system->m_mtGestureHandled = true;
-                                    }
-                                }
-                            }
+                            system->touchEndPan();
                         }
-
-                        /* ----- FINGER LIFT / GESTURE END ----- */
-                        if (actionMasked == AMOTION_EVENT_ACTION_UP ||
-                            actionMasked == AMOTION_EVENT_ACTION_POINTER_UP ||
-                            actionMasked == AMOTION_EVENT_ACTION_CANCEL) {
-                            uint32_t remaining = pointerCount;
-                            if (actionMasked == AMOTION_EVENT_ACTION_POINTER_UP) {
-                                int idx = (action & AMOTION_EVENT_ACTION_POINTER_INDEX_MASK) >> AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT;
-                                if (idx < (int)pointerCount) remaining = pointerCount - 1;
-                            }
-                            if (remaining < 2) {
-                                /* In orbit mode on POINTER_UP: don't cleanup yet.
-                                   The second finger may lift while the first continues orbiting. */
-                                bool doCleanup = !(system->m_mtOrbitMode && actionMasked == AMOTION_EVENT_ACTION_POINTER_UP);
-                                if (doCleanup && !system->m_mtCleanupDone) {
-                                    system->m_mtCleanupDone = true;
-                                    GHOST_WindowAndroid *win = (GHOST_WindowAndroid *)system->getWindowManager()->getActiveWindow();
-                                    if (win) {
-                                        if (system->m_mtOrbitMode) {
-                                            /* All fingers lifted: end orbit. */
-                                            GHOST_TabletData td;
-                                            system->pushEvent(new GHOST_EventButton(now, GHOST_kEventButtonUp, win, GHOST_kButtonMaskMiddle, td));
-                                        } else {
-                                            /* 2-finger gestures only handled in gesture processing
-                                               (zoom/orbit). Right-click is via the floating button only. */
-                                        }
-                                    }
-                                }
-                                if (doCleanup) {
-                                    system->m_mtActive = false;
-                                    system->m_mtFingerCount = 0;
-                                    system->m_mtPointerCount = 0;
-                                    system->m_mtDragActive = false;
-                                    system->m_mtCleanupDone = false;
-                                    system->m_mtOrbitMode = false;
-                                }
-                            }
+                        else if (!system->m_panActive) {
+                            system->touchSendShift(true);
+                            system->pushEvent(new GHOST_EventButton(now,
+                                                                    GHOST_kEventButtonDown,
+                                                                    win,
+                                                                    GHOST_kButtonMaskMiddle,
+                                                                    td));
+                            system->m_panActive = true;
                         }
-
-                        /* Always consume multi-touch events. */
+                        system->m_gestureActive = false;
                         return 1;
                     }
 
-                    /* Single-finger: normal processing. */
-                    system->m_mtPointerCount = 0;
+                    system->touchEndPan();
+
+                    /* Two fingers: either a pan or a zoom, decided once and then
+                     * held for the rest of the gesture. Both used to be emitted on
+                     * every frame, so the jitter between two fingers zoomed the
+                     * view while they were being dragged to scroll it. A gesture is
+                     * never a click, so drop the press the first finger already
+                     * sent. */
+                    if (win && pointerCount >= 2) {
+                        system->touchCancelPending();
+
+                        float x0 = AMotionEvent_getX(event, 0);
+                        float y0 = AMotionEvent_getY(event, 0);
+                        float x1 = AMotionEvent_getX(event, 1);
+                        float y1 = AMotionEvent_getY(event, 1);
+                        float cx = (x0 + x1) * 0.5f;
+                        float cy = (y0 + y1) * 0.5f;
+                        float dist = sqrtf((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0));
+
+                        if (!system->m_gestureActive) {
+                            system->m_gestureActive = true;
+                            system->m_gestureKind =
+                                    GHOST_SystemAndroid::GestureKind::Undecided;
+                            system->m_gestureStartX = cx;
+                            system->m_gestureStartY = cy;
+                            system->m_gestureStartDist = dist;
+                            system->m_gesturePrevX = cx;
+                            system->m_gesturePrevY = cy;
+                            system->m_gesturePrevDist = dist;
+                            system->m_touchPan1Active = false;
+                            return 1;
+                        }
+
+                        if (system->m_gestureKind ==
+                            GHOST_SystemAndroid::GestureKind::Undecided)
+                        {
+                            /* Both readings grow together at the start of any
+                             * two-finger touch, so wait until one is clearly ahead.
+                             * Emitting both in the meantime is what made scrolling a
+                             * panel zoom it as well. */
+                            float moved = sqrtf((cx - system->m_gestureStartX) *
+                                                    (cx - system->m_gestureStartX) +
+                                                (cy - system->m_gestureStartY) *
+                                                    (cy - system->m_gestureStartY));
+                            float spread = fabsf(dist - system->m_gestureStartDist);
+                            if (moved < GESTURE_DECIDE_PX && spread < GESTURE_DECIDE_PX) {
+                                system->m_gesturePrevX = cx;
+                                system->m_gesturePrevY = cy;
+                                system->m_gesturePrevDist = dist;
+                                return 1;
+                            }
+                            system->m_gestureKind =
+                                    (spread > moved) ?
+                                            GHOST_SystemAndroid::GestureKind::Zoom :
+                                            GHOST_SystemAndroid::GestureKind::Pan;
+                        }
+
+                        if (system->m_gestureKind ==
+                            GHOST_SystemAndroid::GestureKind::Pan)
+                        {
+                            const int32_t dx = int32_t(cx - system->m_gesturePrevX);
+                            const int32_t dy = int32_t(cy - system->m_gesturePrevY);
+                            system->pushEvent(new GHOST_EventTrackpad(now,
+                                                                      win,
+                                                                      GHOST_kTrackpadEventScroll,
+                                                                      int32_t(cx),
+                                                                      int32_t(cy),
+                                                                      dx,
+                                                                      dy,
+                                                                      /* Direct touch is
+                                                                       * natural scrolling. */
+                                                                      true));
+                        }
+                        else {
+                            system->pushEvent(new GHOST_EventTrackpad(
+                                    now,
+                                    win,
+                                    GHOST_kTrackpadEventMagnify,
+                                    int32_t(cx),
+                                    int32_t(cy),
+                                    int32_t(dist - system->m_gesturePrevDist),
+                                    0,
+                                    false));
+                        }
+                        system->m_gesturePrevX = cx;
+                        system->m_gesturePrevY = cy;
+                        system->m_gesturePrevDist = dist;
+                        return 1;
+                    }
+
+                    /* The gesture ended with the fingers lifting, so this event is the
+                     * tail of a multi-touch sequence, not a tap. The press that the
+                     * first finger sent was already released when the gesture began;
+                     * letting the legacy path below see this lift would send a button
+                     * up with nothing behind it. */
+                    const bool gesture_ended = system->m_gestureActive;
+                    system->m_gestureActive = false;
+                    if (gesture_ended &&
+                        (actionMasked == AMOTION_EVENT_ACTION_UP ||
+                         actionMasked == AMOTION_EVENT_ACTION_CANCEL))
+                    {
+                        system->m_isTouchDown = false;
+                        system->m_fingerGestureActive = false;
+                        return 1;
+                    }
+
+                    /* A fresh single finger starts a new interaction. A two-finger gesture
+                     * can end with an UP that still reports two pointers (both lifted in
+                     * the same frame), in which case the tail above never saw it; clear
+                     * any leftover state here so the next tap is not mistaken for the
+                     * end of that gesture and lose its button release. */
                     if (actionMasked == AMOTION_EVENT_ACTION_DOWN) {
-                        system->m_mtFirstFingerDownTime = now;
+                        system->m_gestureActive = false;
                     }
 
                     /* Scroll mode: single-finger drag sends wheel events instead of LEFT drag. */
@@ -1343,30 +1456,6 @@ static int32_t engine_handle_input(struct android_app *app, AInputEvent *event) 
                                 return 1;
                             }
                             if (actionMasked == AMOTION_EVENT_ACTION_UP || actionMasked == AMOTION_EVENT_ACTION_CANCEL) {
-                                return 1;
-                            }
-                        }
-                    }
-
-                    /* If orbit mode is active, intercept events to continue orbiting
-                       even after the second finger lifted. */
-                    if (system->m_mtOrbitMode) {
-                        GHOST_WindowAndroid *win = (GHOST_WindowAndroid *)system->getWindowManager()->getActiveWindow();
-                        if (win) {
-                            GHOST_TabletData td;
-                            if (actionMasked == AMOTION_EVENT_ACTION_MOVE) {
-                                float fx = AMotionEvent_getX(event, 0);
-                                float fy = AMotionEvent_getY(event, 0);
-                                system->pushEvent(new GHOST_EventCursor(now, GHOST_kEventCursorMove, win, fx, fy, td));
-                                return 1;
-                            }
-                            if (actionMasked == AMOTION_EVENT_ACTION_UP || actionMasked == AMOTION_EVENT_ACTION_CANCEL) {
-                                system->pushEvent(new GHOST_EventButton(now, GHOST_kEventButtonUp, win, GHOST_kButtonMaskMiddle, td));
-                                system->m_mtOrbitMode = false;
-                                system->m_mtActive = false;
-                                system->m_mtFingerCount = 0;
-                                system->m_mtDragActive = false;
-                                system->m_mtCleanupDone = false;
                                 return 1;
                             }
                         }
@@ -1497,6 +1586,100 @@ std::string cpp11_codepoint_to_utf8(char32_t cp) // C++11 Sandard
     return {utf8, end_of_utf8};
 }
 
+/* Press or release the synthetic Shift that turns a three-finger middle-mouse
+ * drag into Blender's "Move the view". The key event is what carries: the window
+ * manager takes each event's modifiers from the last key state it saw, so the
+ * middle-button press that follows has Shift set and matches the keymap item.
+ * m_gestureShift keeps GHOST's own account of the modifier in step. */
+void GHOST_SystemAndroid::touchSendShift(bool down)
+{
+    if (m_gestureShift == down) {
+        return;
+    }
+    m_gestureShift = down;
+    GHOST_WindowAndroid *window =
+            (GHOST_WindowAndroid *) getWindowManager()->getActiveWindow();
+    if (window == nullptr) {
+        return;
+    }
+    pushEvent(new GHOST_EventKey(getMilliSeconds(),
+                                 down ? GHOST_kEventKeyDown : GHOST_kEventKeyUp,
+                                 window,
+                                 GHOST_kKeyLeftShift,
+                                 false));
+}
+
+void GHOST_SystemAndroid::touchEndPan()
+{
+    if (!m_panActive) {
+        return;
+    }
+    m_panActive = false;
+    GHOST_WindowAndroid *window =
+            (GHOST_WindowAndroid *) getWindowManager()->getActiveWindow();
+    if (window != nullptr) {
+        GHOST_TabletData td;
+        pushEvent(new GHOST_EventButton(getMilliSeconds(),
+                                        GHOST_kEventButtonUp,
+                                        window,
+                                        GHOST_kButtonMaskMiddle,
+                                        td));
+    }
+    /* Release Shift only after the button. */
+    touchSendShift(false);
+}
+
+void GHOST_SystemAndroid::touchCancelPending()
+{
+    m_touchPending = false;
+    m_fingerGestureActive = false;
+    if (m_touchButtonDown) {
+        GHOST_WindowAndroid *window =
+                (GHOST_WindowAndroid *) getWindowManager()->getActiveWindow();
+        if (window != nullptr) {
+            GHOST_TabletData td;
+            pushEvent(new GHOST_EventButton(getMilliSeconds(),
+                                            GHOST_kEventButtonUp,
+                                            window,
+                                            m_touchButtonMask,
+                                            td));
+        }
+        m_touchButtonDown = false;
+    }
+}
+
+/* A finger held still emits no events, so the long-press is timed here, from
+ * processEvents(). Moving cancels it: anything aimed at a small target is
+ * approached slowly, and half a second of that must not become a context menu. */
+void GHOST_SystemAndroid::touchLongPressCheck()
+{
+    if (!m_touchPending) {
+        return;
+    }
+    if (getMilliSeconds() - m_touchDownTime < TOUCH_LONG_PRESS_MS) {
+        return;
+    }
+    if (std::abs(m_x - m_touchDownX) > TOUCH_LONG_PRESS_MOVE_PX ||
+        std::abs(m_y - m_touchDownY) > TOUCH_LONG_PRESS_MOVE_PX)
+    {
+        return;
+    }
+    m_touchPending = false;
+    GHOST_WindowAndroid *window =
+            (GHOST_WindowAndroid *) getWindowManager()->getActiveWindow();
+    if (window == nullptr) {
+        return;
+    }
+    GHOST_TabletData td;
+    m_touchButtonDown = true;
+    m_touchButtonMask = GHOST_kButtonMaskRight;
+    pushEvent(new GHOST_EventButton(getMilliSeconds(),
+                                    GHOST_kEventButtonDown,
+                                    window,
+                                    GHOST_kButtonMaskRight,
+                                    td));
+}
+
 bool GHOST_SystemAndroid::processEvents(bool waitForEvent) {
 
 //    CLOG_ERROR(&LOG,"GHOST_SystemAndroid::processEvents 1");
@@ -1532,6 +1715,9 @@ bool GHOST_SystemAndroid::processEvents(bool waitForEvent) {
         }
     }
 //    CLOG_ERROR(&LOG,"GHOST_SystemAndroid::processEvents keyboard 1 %d",m_keyEventStatus.size());
+    /* A finger held still sends nothing, so the long-press is checked once per frame. */
+    touchLongPressCheck();
+
     while (!m_keyEventStatus.empty()) {
         KeyEventStatus keyEventStatus = m_keyEventStatus.front();
         char32_t unicode = keyEventStatus.m_p_unicode;
@@ -2175,7 +2361,7 @@ GHOST_TSuccess GHOST_SystemAndroid::getModifierKeys(GHOST_ModifierKeys &keys) co
     bool down = app->GetAsyncKeyState(0);
     const int32_t latched_state = latched_meta_;
     keys.set(GHOST_kModifierKeyLeftShift,
-             down || isShiftPressed || m_pendingShift || m_heldShift ||
+             down || isShiftPressed || m_pendingShift || m_heldShift || m_gestureShift ||
              (latched_state & AMETA_SHIFT_ON) != 0);
     down = false;//(::GetAsyncKeyState(VK_RSHIFT)) != 0;
     keys.set(GHOST_kModifierKeyRightShift, down);

@@ -18,6 +18,9 @@
 #include "BLI_utildefines.h"
 
 #include "BKE_context.h"
+#include "BKE_screen.h"
+
+#include "DNA_space_types.h"
 
 #include "RNA_access.h"
 #include "RNA_define.h"
@@ -212,6 +215,50 @@ static int view_pan_exec(bContext *C, wmOperator *op)
 static int view_pan_invoke(bContext *C, wmOperator *op, const wmEvent *event)
 {
   wmWindow *window = CTX_wm_window(C);
+
+#ifdef __ANDROID__
+  /* Touch: view2d.pan is also bound to a left click-drag, so a finger can scroll a panel.
+   * That binding is added to the "User Interface" keymap, which is attached to every region
+   * with widgets -- including the main region of the node editor and the outliner, where a
+   * left drag already means box-select. Let those keep it: the press there is consumed at
+   * press time, but the drag is delivered to the keymaps regardless, and this one comes
+   * first. Only the regions that are a list of widgets (see ui_but_touch_scroll_region() in
+   * interface_handlers.cc) take the drag; everywhere else it passes through untouched. */
+  if (event->type == LEFTMOUSE) {
+    const ARegion *region = CTX_wm_region(C);
+    const ScrArea *area = CTX_wm_area(C);
+    bool allowed = false;
+    if (region != nullptr) {
+      switch (region->regiontype) {
+        case RGN_TYPE_HEADER:
+        case RGN_TYPE_TOOL_HEADER:
+        case RGN_TYPE_FOOTER:
+        case RGN_TYPE_UI:
+        case RGN_TYPE_TOOLS:
+        case RGN_TYPE_TOOL_PROPS:
+        case RGN_TYPE_NAV_BAR:
+        case RGN_TYPE_EXECUTE:
+        case RGN_TYPE_CHANNELS:
+          allowed = true;
+          break;
+        case RGN_TYPE_WINDOW:
+          allowed = area != nullptr && ELEM(area->spacetype,
+                                            SPACE_PROPERTIES,
+                                            SPACE_USERPREF,
+                                            SPACE_FILE,
+                                            SPACE_INFO,
+                                            SPACE_TOPBAR,
+                                            SPACE_STATUSBAR);
+          break;
+        default:
+          break;
+      }
+    }
+    if (!allowed) {
+      return OPERATOR_PASS_THROUGH | OPERATOR_CANCELLED;
+    }
+  }
+#endif
 
   /* set up customdata */
   view_pan_init(C, op);

@@ -18,6 +18,7 @@
 #include "DNA_curveprofile_types.h"
 #include "DNA_scene_types.h"
 #include "DNA_screen_types.h"
+#include "DNA_space_types.h"
 
 #include "BLI_array.hh"
 #include "BLI_array_utils.h"
@@ -4482,11 +4483,94 @@ static void ui_do_but_extra_operator_icons_mousemove(uiBut *but,
 
 #ifdef USE_DRAG_TOGGLE
 /* Shared by any button that supports drag-toggle. */
+
+#ifdef __ANDROID__
+/**
+ * True in the regions where a press-and-drag should scroll rather than act on
+ * whatever widget is under the finger.
+ *
+ * On a touch screen there is no second finger to spare: a two-finger drag is
+ * already pan and zoom, and on a phone it is awkward besides. A panel, a header
+ * or the Properties editor is made almost entirely of widgets, so there is
+ * nowhere to put a finger that is not a button, and these regions could not be
+ * scrolled with one finger at all.
+ *
+ * Binding view2d.pan to a left click-drag does not achieve this on its own,
+ * because most widgets act on #KM_PRESS and are finished before a drag can be
+ * recognised. The callers of this function defer to #KM_CLICK instead, which the
+ * window manager synthesises on release only when the drag threshold was never
+ * crossed. A tap therefore still activates the widget, while a drag falls
+ * through to the region keymap and pans.
+ *
+ * Deliberately false for the main region of the 3D view, the node editor, the
+ * outliner and the other data editors, where press-and-drag already means box
+ * select or a stroke and must keep meaning that. False inside menus too: those
+ * scroll on their own path.
+ */
+static bool ui_but_touch_scroll_region(const uiBut *but, const uiHandleButtonData *data)
+{
+  if (but->block && ui_block_is_menu(but->block)) {
+    return false;
+  }
+  const ARegion *region = data->region;
+  if (region == nullptr) {
+    return false;
+  }
+  switch (region->regiontype) {
+    /* Everything that frames an editor rather than being one: headers, side
+     * panels, tool bars, channel lists, the Properties tab column. */
+    case RGN_TYPE_HEADER:
+    case RGN_TYPE_TOOL_HEADER:
+    case RGN_TYPE_FOOTER:
+    case RGN_TYPE_UI:
+    case RGN_TYPE_TOOLS:
+    case RGN_TYPE_TOOL_PROPS:
+    case RGN_TYPE_NAV_BAR:
+    case RGN_TYPE_EXECUTE:
+    case RGN_TYPE_CHANNELS:
+      return true;
+    /* Main regions, but only for the editors that are themselves a list of widgets. */
+    case RGN_TYPE_WINDOW: {
+      const ScrArea *area = data->area;
+      return area != nullptr && ELEM(area->spacetype,
+                                     SPACE_PROPERTIES,
+                                     SPACE_USERPREF,
+                                     SPACE_FILE,
+                                     SPACE_INFO,
+                                     SPACE_TOPBAR,
+                                     SPACE_STATUSBAR);
+    }
+    default:
+      return false;
+  }
+}
+
+/**
+ * Set when a motion event over a held button should reach the region keymap
+ * rather than be swallowed, so a drag that starts on a widget scrolls the
+ * region. ui_handler_region_menu() blocks every event while a button is in a
+ * modal state; blocking a motion is exactly what makes the window manager drop
+ * its pending click-drag. This is how that one case asks to be let through.
+ */
+static bool ui_touch_scroll_pass_motion = false;
+
+#  define BUT_TOUCH_SCROLL(but, data) ui_but_touch_scroll_region(but, data)
+#  define TOUCH_SCROLL_PASS_MOTION() (ui_touch_scroll_pass_motion = true)
+#else
+#  define BUT_TOUCH_SCROLL(but, data) false
+#  define TOUCH_SCROLL_PASS_MOTION() ((void)0)
+#endif
+
 static bool ui_do_but_ANY_drag_toggle(
     bContext *C, uiBut *but, uiHandleButtonData *data, const wmEvent *event, int *r_retval)
 {
   if (data->state == BUTTON_STATE_HIGHLIGHT) {
-    if (event->type == LEFTMOUSE && event->val == KM_PRESS && ui_but_is_drag_toggle(but)) {
+    /* Touch: a drag in a touch-scrollable region is a scroll, not a drag-toggle,
+     * so the button must not take the press or the region would never see the
+     * motion. */
+    if (event->type == LEFTMOUSE && event->val == KM_PRESS && ui_but_is_drag_toggle(but) &&
+        !BUT_TOUCH_SCROLL(but, data))
+    {
       ui_apply_but(C, but->block, but, data, true);
       button_activate_state(C, but, BUTTON_STATE_WAIT_DRAG);
       data->dragstartx = event->xy[0];
@@ -4520,7 +4604,14 @@ static int ui_do_but_BUT(bContext *C, uiBut *but, uiHandleButtonData *data, cons
   if (data->state == BUTTON_STATE_HIGHLIGHT) {
     if (event->type == LEFTMOUSE && event->val == KM_PRESS) {
       button_activate_state(C, but, BUTTON_STATE_WAIT_RELEASE);
-      return WM_UI_HANDLER_BREAK;
+      /* Touch: leaving the press unconsumed is what lets the window manager
+       * still turn it into a click-drag once the finger moves, so a drag that
+       * starts on a button scrolls the region -- the tool bar is a column of
+       * these and could not be scrolled at all. WAIT_RELEASE is still entered,
+       * so a tap applies the button on release exactly as before and the hold
+       * action, the tool-group popup, still arms. The motion itself is what
+       * cancels the button; see the WAIT_RELEASE case in ui_handle_button_event. */
+      return BUT_TOUCH_SCROLL(but, data) ? WM_UI_HANDLER_CONTINUE : WM_UI_HANDLER_BREAK;
     }
     if (event->type == LEFTMOUSE && event->val == KM_RELEASE && but->block->handle) {
       /* regular buttons will be 'UI_SELECT', menu items 'UI_ACTIVE' */
@@ -4677,7 +4768,10 @@ static int ui_do_but_TAB(
       return WM_UI_HANDLER_BREAK;
     }
     if (ELEM(event->type, LEFTMOUSE, EVT_PADENTER, EVT_RETKEY)) {
-      const int event_val = (is_property) ? KM_PRESS : KM_CLICK;
+      /* Touch: where a drag scrolls the region, the press has to survive until it is known to
+       * be a tap, so properties key off KM_CLICK there instead of KM_PRESS. Otherwise every
+       * field in a scrollable panel would grab the press and the panel would never scroll. */
+      const int event_val = (is_property && !BUT_TOUCH_SCROLL(but, data)) ? KM_PRESS : KM_CLICK;
       if (event->val == event_val) {
         button_activate_state(C, but, BUTTON_STATE_EXIT);
         return WM_UI_HANDLER_BREAK;
@@ -4767,8 +4861,11 @@ static int ui_do_but_TOG(bContext *C, uiBut *but, uiHandleButtonData *data, cons
         do_activate = (event->val == KM_RELEASE);
       }
       else if (!ui_do_but_extra_operator_icon(C, but, data, event)) {
-        /* Also use double-clicks to prevent fast clicks to leak to other handlers (#76481). */
-        do_activate = ELEM(event->val, KM_PRESS, KM_DBL_CLICK);
+        /* Also use double-clicks to prevent fast clicks to leak to other handlers (#76481).
+         * Touch: where a drag scrolls the region the press is withheld until the finger
+         * lifts, so activation keys off KM_CLICK there rather than KM_PRESS. */
+        do_activate = BUT_TOUCH_SCROLL(but, data) ? ELEM(event->val, KM_CLICK, KM_DBL_CLICK) :
+                                                    ELEM(event->val, KM_PRESS, KM_DBL_CLICK);
       }
     }
 
@@ -6081,7 +6178,9 @@ static int ui_do_but_BLOCK(bContext *C, uiBut *but, uiHandleButtonData *data, co
     }
 #endif
     /* regular open menu */
-    if (ELEM(event->type, LEFTMOUSE, EVT_PADENTER, EVT_RETKEY) && event->val == KM_PRESS) {
+    if (ELEM(event->type, LEFTMOUSE, EVT_PADENTER, EVT_RETKEY) &&
+        event->val == (BUT_TOUCH_SCROLL(but, data) ? KM_CLICK : KM_PRESS))
+    {
       button_activate_state(C, but, BUTTON_STATE_MENU_OPEN);
       return WM_UI_HANDLER_BREAK;
     }
@@ -6269,7 +6368,9 @@ static int ui_do_but_COLOR(bContext *C, uiBut *but, uiHandleButtonData *data, co
     }
 #endif
     /* regular open menu */
-    if (ELEM(event->type, LEFTMOUSE, EVT_PADENTER, EVT_RETKEY) && event->val == KM_PRESS) {
+    if (ELEM(event->type, LEFTMOUSE, EVT_PADENTER, EVT_RETKEY) &&
+        event->val == (BUT_TOUCH_SCROLL(but, data) ? KM_CLICK : KM_PRESS))
+    {
       ui_palette_set_active(color_but);
       button_activate_state(C, but, BUTTON_STATE_MENU_OPEN);
       return WM_UI_HANDLER_BREAK;
@@ -8475,8 +8576,17 @@ static void button_activate_state(bContext *C, uiBut *but, uiHandleButtonState s
 
   /* add hold timer if it's used */
   if (state == BUTTON_STATE_WAIT_RELEASE && (but->hold_func != nullptr)) {
-    data->hold_action_timer = WM_event_add_timer(
-        data->wm, data->window, TIMER, BUTTON_AUTO_OPEN_THRESH);
+    /* Touch: 0.2s is shorter than the pause at the start of a deliberate drag, so where a drag
+     * scrolls the region the tool-group popup opened before the scroll could begin -- a grouped
+     * tool behaved like a plain tap. Wait long enough that only a pointer meaning to stay put
+     * gets there; motion cancels the timer outright (see ui_handle_button_event).
+     *
+     * This only ever applies to a stylus. A finger never reaches here at all: its press is
+     * withheld until it has travelled past the slop, and holding it still turns into a
+     * right-click in GHOST before any left press is sent. */
+    const double hold_delay = BUT_TOUCH_SCROLL(but, data) ? BUTTON_AUTO_OPEN_THRESH * 3.0 :
+                                                           BUTTON_AUTO_OPEN_THRESH;
+    data->hold_action_timer = WM_event_add_timer(data->wm, data->window, TIMER, hold_delay);
   }
   else if (data->hold_action_timer) {
     WM_event_remove_timer(data->wm, data->window, data->hold_action_timer);
@@ -9337,9 +9447,31 @@ static int ui_handle_button_event(bContext *C, const wmEvent *event, uiBut *but)
         break;
       }
       case MOUSEMOVE: {
+        /* Touch: past the drag threshold this is a scroll rather than a press. Cancel the
+         * button -- what releasing away from it would have done anyway -- and let the motion
+         * through, so the click-drag survives for the region keymap to turn into a pan.
+         * Anything that drags on purpose has left WAIT_RELEASE by now: a slider is in
+         * NUM_EDITING and a text field in TEXT_EDITING. */
+        if (BUT_TOUCH_SCROLL(but, data) && WM_event_drag_test(event, event->prev_press_xy)) {
+          data->cancel = true;
+          button_activate_state(C, but, BUTTON_STATE_EXIT);
+          TOUCH_SCROLL_PASS_MOTION();
+          return WM_UI_HANDLER_CONTINUE;
+        }
         /* deselect the button when moving the mouse away */
         /* also de-activate for buttons that only show highlights */
         if (ui_but_contains_point_px(but, region, event->xy)) {
+
+          /* Touch: movement means this is a scroll, so the tool-group popup must not fire
+           * behind it. A third of the drag threshold is slack enough for a resting stylus while
+           * still killing the timer well before the drag itself is recognised. */
+          if (data->hold_action_timer && BUT_TOUCH_SCROLL(but, data) &&
+              len_manhattan_v2v2_int(event->xy, event->prev_press_xy) >
+                  (WM_event_drag_threshold(event) / 3))
+          {
+            WM_event_remove_timer(data->wm, data->window, data->hold_action_timer);
+            data->hold_action_timer = nullptr;
+          }
 
           /* Drag on a hold button (used in the toolbar) now opens it immediately. */
           if (data->hold_action_timer) {
@@ -9367,6 +9499,16 @@ static int ui_handle_button_event(bContext *C, const wmEvent *event, uiBut *but)
             data->cancel = true;
             ED_region_tag_redraw_no_rebuild(data->region);
           }
+        }
+        /* Touch: still below the threshold, but the motion must not be consumed either. The
+         * window manager drops the pending click-drag as soon as any handler takes a motion
+         * event, so consuming these would kill the drag before it could ever reach the
+         * threshold. That is invisible with a finger, whose press is only reported once it has
+         * already travelled past the slop, and fatal with a stylus, which presses on contact
+         * and then moves a few pixels at a time. */
+        if (BUT_TOUCH_SCROLL(but, data)) {
+          TOUCH_SCROLL_PASS_MOTION();
+          return WM_UI_HANDLER_CONTINUE;
         }
         break;
       }
@@ -11475,6 +11617,11 @@ static int ui_handler_region_menu(bContext *C, const wmEvent *event, void * /*us
   ARegion *region = menu_region ? menu_region : CTX_wm_region(C);
   int retval = WM_UI_HANDLER_CONTINUE;
 
+#ifdef __ANDROID__
+  /* Cleared first so only a flag raised by this event's own button handling counts. */
+  ui_touch_scroll_pass_motion = false;
+#endif
+
   uiBut *but = ui_region_find_active_but(region);
 
   if (but) {
@@ -11558,6 +11705,16 @@ static int ui_handler_region_menu(bContext *C, const wmEvent *event, void * /*us
       return WM_UI_HANDLER_CONTINUE;
     }
   }
+
+#ifdef __ANDROID__
+  /* A motion from a held button in a touch-scrollable region has to reach the region
+   * keymap, where view2d.pan turns the click-drag into a scroll. Blocking it here is what
+   * keeps that drag from ever being recognised. */
+  if (ui_touch_scroll_pass_motion) {
+    ui_touch_scroll_pass_motion = false;
+    return WM_UI_HANDLER_CONTINUE;
+  }
+#endif
 
   /* we block all events, this is modal interaction */
   return WM_UI_HANDLER_BREAK;
