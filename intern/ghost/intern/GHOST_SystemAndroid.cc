@@ -1051,17 +1051,23 @@ bool processButtonEvent(struct android_app *app, AInputEvent *event) {
     td.Active=GHOST_TTabletMode::GHOST_kTabletModeStylus;
     uint64_t currentTime = system->getMilliSeconds();
 
-    /* One finger drag as a pan, and a held finger as a right-click, behind
-     * debug.blender.gestures. Off by default, so nothing changes until asked for.
-     * The press is withheld until the touch is known to be a tap, a drag or a
-     * hold; the legacy path below keeps its immediate press for everything else
-     * (stylus, sculpt arc, grid move, the top-left settings button). */
+    /* A finger's press is withheld until the touch is known to be a tap, a drag or
+     * a hold. This is not itself a gesture: it is what lets the window manager
+     * form a KM_CLICK at the point where the finger lifted, instead of losing the
+     * click to jitter. Widgets in scrollable regions now activate on KM_CLICK, and
+     * view3d.select does too, so without this a small movement cancels the click.
+     * The legacy path below keeps its immediate press for everything else (stylus,
+     * sculpt arc, grid move, the top-left settings button).
+     *
+     * debug.blender.gestures only decides what a DRAG past the slop becomes: a pan
+     * when on, the ordinary left drag when off. A held finger turns into a right
+     * click only when it is on. */
     const bool finger_touch = (toolType == AMOTION_EVENT_TOOL_TYPE_FINGER);
     const bool top_left_press = checkClickPos(width, height, msgPosX, msgPosY) &&
                                 (21 != window->m_shpeType);
     const bool new_finger_active = system->m_fingerGestureActive;
-    if (finger_touch && GHOST_android_one_finger_pan() && !checkMove && !inSculptArc &&
-        !top_left_press && (motionaction == AMOTION_EVENT_ACTION_DOWN || new_finger_active))
+    if (finger_touch && !checkMove && !inSculptArc && !top_left_press &&
+        (motionaction == AMOTION_EVENT_ACTION_DOWN || new_finger_active))
     {
         system->m_lastDownx = msgPosX;
         system->m_lastDowny = msgPosY;
@@ -1084,18 +1090,40 @@ bool processButtonEvent(struct android_app *app, AInputEvent *event) {
             system->pushEvent(new GHOST_EventCursor(
                     currentTime, GHOST_kEventCursorMove, window, msgPosX, msgPosY, td));
 
-            /* Past the slop this is a drag, which the flag reports as a pan instead
-             * of a left button drag. No button is sent at all: MOUSEPAN means
-             * "scroll" in a panel and "orbit" in the viewport purely through the
-             * keymap, so the same finger does the right thing in both. */
+            /* Past the slop this is a drag. debug.blender.gestures decides what it
+             * means: with it on, no button at all is sent and MOUSEPAN lets the
+             * keymap scroll a panel or orbit the viewport; with it off, it is the
+             * ordinary left drag. Either way the press is reported at the point
+             * where the finger landed, not where it has already travelled to --
+             * that is the position Blender measures its own drag threshold from. */
             if (system->m_touchPending &&
                 (fabsf(msgPosX - system->m_touchDownX) > TOUCH_SLOP_PX ||
                  fabsf(msgPosY - system->m_touchDownY) > TOUCH_SLOP_PX))
             {
                 system->m_touchPending = false;
-                system->m_touchPan1Active = true;
-                system->m_touchPan1LastX = system->m_touchDownX;
-                system->m_touchPan1LastY = system->m_touchDownY;
+                if (GHOST_android_one_finger_pan()) {
+                    system->m_touchPan1Active = true;
+                    system->m_touchPan1LastX = system->m_touchDownX;
+                    system->m_touchPan1LastY = system->m_touchDownY;
+                }
+                else {
+                    system->pushEvent(new GHOST_EventCursor(currentTime,
+                                                            GHOST_kEventCursorMove,
+                                                            window,
+                                                            system->m_touchDownX,
+                                                            system->m_touchDownY,
+                                                            td));
+                    const GHOST_TButton mask = GHOST_SystemAndroid::currentButton(app);
+                    system->m_touchButtonDown = true;
+                    system->m_touchButtonMask = mask;
+                    system->pushEvent(new GHOST_EventButton(currentTime,
+                                                            GHOST_kEventButtonDown,
+                                                            window,
+                                                            mask,
+                                                            td));
+                    system->pushEvent(new GHOST_EventCursor(
+                            currentTime, GHOST_kEventCursorMove, window, msgPosX, msgPosY, td));
+                }
             }
             if (system->m_touchPan1Active) {
                 const int32_t dx = int32_t(msgPosX) - system->m_touchPan1LastX;
@@ -1121,10 +1149,13 @@ bool processButtonEvent(struct android_app *app, AInputEvent *event) {
         {
             system->m_isTouchDown = false;
             system->m_fingerGestureActive = false;
-            /* Released before the long-press elapsed: a plain tap, press and
-             * release at the same point. */
+            /* Released before the long-press elapsed: a plain tap. Press and release
+             * go out together at the point where the finger lifted, so no motion
+             * can slip between them and cancel the click. */
             if (system->m_touchPending) {
                 system->m_touchPending = false;
+                system->pushEvent(new GHOST_EventCursor(
+                        currentTime, GHOST_kEventCursorMove, window, msgPosX, msgPosY, td));
                 const GHOST_TButton mask = GHOST_SystemAndroid::currentButton(app);
                 system->m_touchButtonDown = true;
                 system->m_touchButtonMask = mask;
@@ -1653,6 +1684,11 @@ void GHOST_SystemAndroid::touchCancelPending()
  * approached slowly, and half a second of that must not become a context menu. */
 void GHOST_SystemAndroid::touchLongPressCheck()
 {
+    /* A held finger is only a right-click when the gesture option is on; with it
+     * off the pending press must survive so the release still acts as a tap. */
+    if (!GHOST_android_one_finger_pan()) {
+        return;
+    }
     if (!m_touchPending) {
         return;
     }

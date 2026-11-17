@@ -53,7 +53,12 @@ struct wmTimer;
 #define UI_MENU_SUBMENU_PADDING (6 * UI_SCALE_FAC)
 
 /* menu scrolling */
-#define UI_MENU_SCROLL_ARROW (12 * UI_SCALE_FAC)
+#ifdef __ANDROID__
+/* A 12px arrow band is a mouse target; a finger cannot reliably hit it. */
+#  define UI_MENU_SCROLL_ARROW (24 * UI_SCALE_FAC)
+#else
+#  define UI_MENU_SCROLL_ARROW (12 * UI_SCALE_FAC)
+#endif
 #define UI_MENU_SCROLL_MOUSE (UI_MENU_SCROLL_ARROW + 2 * UI_SCALE_FAC)
 #define UI_MENU_SCROLL_PAD (4 * UI_SCALE_FAC)
 
@@ -800,6 +805,18 @@ struct uiPopupBlockHandle {
 
   wmTimer *scrolltimer;
   float scrolloffset;
+
+  /* Touch: dragging an over-long menu or dialog with a finger. A mouse can hover the arrow
+   * band to auto-scroll or hold MMB to pan; a finger can do neither, so a press in a clipped
+   * popup arms this, a motion past the drag threshold pans it, and the release is swallowed
+   * so the item under the finger at the end is not fired. A press that never moves is left
+   * alone and activates the item as usual. */
+  bool touch_scroll_armed = false;
+  bool touch_scroll_panning = false;
+  int touch_scroll_start_y = 0;
+  int touch_scroll_last_y = 0;
+  /** 't', 'b' or 0: which arrow band the press landed in, for a tap that never becomes a drag. */
+  char touch_scroll_arrow = 0;
 
   uiKeyNavLock keynav_state;
 

@@ -10221,6 +10221,119 @@ static void ui_menu_scroll_apply_offset_y(ARegion *region, uiBlock *block, float
   ED_region_tag_redraw(region);
 }
 
+#ifdef __ANDROID__
+/**
+ * Touch: scroll a popup that does not fit, with a finger.
+ *
+ * A mouse has two ways into an over-long menu and a finger has neither: hovering the arrow band
+ * (which starts #uiPopupBlockHandle.scrolltimer) and holding MMB to pan. So the menu was only
+ * reachable as far as it happened to fit, and the arrows looked like controls while doing
+ * nothing on touch.
+ *
+ * Two gestures, both inert unless the block is actually clipped:
+ * - Drag anywhere in the popup to pan it. The press is not consumed, so a tap still presses the
+ *   item under it. Past the drag threshold the active button is cancelled and the motion
+ *   becomes a scroll; the release is swallowed so the item the finger drifted onto is not fired.
+ * - Tap the arrow band to step. Nothing else is under it while the block is clipped.
+ *
+ * Kept separate from BUT_TOUCH_SCROLL: menu items must keep their KM_PRESS activation, or the
+ * modal popup handler and the region keymap would fight over the same event.
+ */
+static int ui_handle_menu_touch_scroll_event(bContext *C,
+                                             const wmEvent *event,
+                                             uiPopupBlockHandle *menu,
+                                             const bool inside)
+{
+  ARegion *region = menu->region;
+  uiBlock *block = static_cast<uiBlock *>(region->uiblocks.first);
+  if (block == nullptr) {
+    return WM_UI_HANDLER_CONTINUE;
+  }
+
+  const bool scrollable = (block->flag & (UI_BLOCK_CLIPTOP | UI_BLOCK_CLIPBOTTOM)) != 0;
+
+  if (event->type == LEFTMOUSE && event->val == KM_PRESS) {
+    menu->touch_scroll_armed = false;
+    menu->touch_scroll_panning = false;
+    menu->touch_scroll_arrow = 0;
+
+    if (!inside || !scrollable || menu->is_grab) {
+      return WM_UI_HANDLER_CONTINUE;
+    }
+    /* A button already editing text or dragging a value owns the gesture. */
+    if (uiBut *but = ui_region_find_active_but(region)) {
+      if (button_modal_state(but->active->state)) {
+        return WM_UI_HANDLER_CONTINUE;
+      }
+    }
+
+    int mx = event->xy[0];
+    int my = event->xy[1];
+    ui_window_to_block(region, block, &mx, &my);
+
+    menu->touch_scroll_armed = true;
+    menu->touch_scroll_start_y = event->xy[1];
+    menu->touch_scroll_last_y = event->xy[1];
+    menu->touch_scroll_arrow = ui_menu_scroll_test(block, my);
+
+    /* Deliberately not consumed: a tap has to reach the item the way it always did. */
+    return WM_UI_HANDLER_CONTINUE;
+  }
+
+  if (!menu->touch_scroll_armed) {
+    return WM_UI_HANDLER_CONTINUE;
+  }
+
+  if (event->type == MOUSEMOVE) {
+    if (!menu->touch_scroll_panning) {
+      if (std::abs(event->xy[1] - menu->touch_scroll_start_y) < WM_event_drag_threshold(event)) {
+        return WM_UI_HANDLER_CONTINUE;
+      }
+      /* Past the threshold this is a scroll, not a press. Let go of whatever the finger
+       * landed on so it neither fires nor stays highlighted under a moving finger. */
+      menu->touch_scroll_panning = true;
+      if (uiBut *but = ui_region_find_active_but(region)) {
+        but->active->cancel = true;
+        button_activate_exit(C, but, but->active, false, false);
+      }
+    }
+
+    const int delta = event->xy[1] - menu->touch_scroll_last_y;
+    if (delta != 0) {
+      ui_menu_scroll_apply_offset_y(region, block, delta);
+      menu->touch_scroll_last_y = event->xy[1];
+    }
+    return WM_UI_HANDLER_BREAK;
+  }
+
+  if (event->type == LEFTMOUSE && event->val == KM_RELEASE) {
+    const bool panned = menu->touch_scroll_panning;
+    const char arrow = menu->touch_scroll_arrow;
+
+    menu->touch_scroll_armed = false;
+    menu->touch_scroll_panning = false;
+    menu->touch_scroll_arrow = 0;
+
+    if (panned) {
+      /* The item under the finger now is not the one the gesture started on. */
+      return WM_UI_HANDLER_BREAK;
+    }
+    if (arrow != 0 && scrollable) {
+      const float dy = (UI_UNIT_Y * 3.0f) / block->aspect;
+      if (arrow == 't' && (block->flag & UI_BLOCK_CLIPTOP)) {
+        ui_menu_scroll_apply_offset_y(region, block, -dy);
+      }
+      else if (arrow == 'b' && (block->flag & UI_BLOCK_CLIPBOTTOM)) {
+        ui_menu_scroll_apply_offset_y(region, block, dy);
+      }
+      return WM_UI_HANDLER_BREAK;
+    }
+  }
+
+  return WM_UI_HANDLER_CONTINUE;
+}
+#endif /* __ANDROID__ */
+
 /** Scroll to activated button. */
 static bool ui_menu_scroll_to_but(ARegion *region, uiBlock *block, uiBut *but_target)
 {
@@ -10449,6 +10562,14 @@ static int ui_handle_menu_event(bContext *C,
 
       return retval;
     }
+  }
+#endif
+
+#ifdef __ANDROID__
+  /* Touch scroll of clipped popups runs before the modal button cascade: it arms on the
+   * press without consuming it, then takes over the motion once it becomes a drag. */
+  if (retval == WM_UI_HANDLER_CONTINUE) {
+    retval = ui_handle_menu_touch_scroll_event(C, event, menu, inside);
   }
 #endif
 
