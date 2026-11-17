@@ -8112,6 +8112,23 @@ static int ui_do_button(bContext *C, uiBlock *block, uiBut *but, const wmEvent *
         (event->modifier & (KM_SHIFT | KM_CTRL | KM_ALT | KM_OSKEY)) == 0 &&
         (event->val == KM_PRESS))
     {
+#ifdef __ANDROID__
+      /* Match 5.3: a finger held on a button that has a hold action gets the hold, not the
+       * context menu. GHOST withholds the finger's left press and turns a held finger into a
+       * RIGHTMOUSE press, so without this the tool-variant triangle (which is wired through
+       * but->hold_func) could never be reached: the generic "Add to Quick Favorites" menu
+       * opened instead and kept swallowing the taps that followed.
+       *
+       * Only for a pointer with no tablet data (the finger). A stylus sends its own left press
+       * and reaches the hold timer normally, and its side button is a real right-click. */
+      if (but->hold_func != nullptr && event->tablet.active == EVT_TABLET_NONE) {
+        data->cancel = true;
+        button_activate_state(C, but, BUTTON_STATE_EXIT);
+        but->hold_func(C, data->region, but);
+        return WM_UI_HANDLER_BREAK;
+      }
+#endif
+
       /* For some button types that are typically representing entire sets of data, right-clicking
        * to spawn the context menu should also activate the item. This makes it clear which item
        * will be operated on.

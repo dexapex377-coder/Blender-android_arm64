@@ -4164,7 +4164,7 @@ void wm_event_do_handlers(bContext *C)
       /* Touch-selection diagnostics: a tap is synthesised as PRESS+RELEASE. If
        * the PRESS is consumed here, KM_CLICK is never formed and keymaps that
        * only bind CLICK cannot select. */
-      if (event->type == LEFTMOUSE &&
+      if (ELEM(event->type, LEFTMOUSE, RIGHTMOUSE) &&
           ELEM(event->val, KM_PRESS, KM_RELEASE, KM_CLICK, KM_DBL_CLICK))
       {
         __android_log_print(ANDROID_LOG_INFO, "OBL.EVT",
