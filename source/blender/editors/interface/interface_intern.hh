@@ -811,12 +811,14 @@ struct uiPopupBlockHandle {
    * popup arms this, a motion past the drag threshold pans it, and the release is swallowed
    * so the item under the finger at the end is not fired. A press that never moves is left
    * alone and activates the item as usual. */
-  bool touch_scroll_armed = false;
-  bool touch_scroll_panning = false;
-  int touch_scroll_start_y = 0;
-  int touch_scroll_last_y = 0;
+  /* No default member initializers: this struct is allocated with MEM_cnew and copied with
+   * memcpy, so it must stay a trivial type (see MEM_guardedalloc.h). */
+  bool touch_scroll_armed;
+  bool touch_scroll_panning;
+  int touch_scroll_start_y;
+  int touch_scroll_last_y;
   /** 't', 'b' or 0: which arrow band the press landed in, for a tap that never becomes a drag. */
-  char touch_scroll_arrow = 0;
+  char touch_scroll_arrow;
 
   uiKeyNavLock keynav_state;
 
