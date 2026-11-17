@@ -7,6 +7,10 @@
 
 #include "MEM_guardedalloc.h"
 
+#ifdef __ANDROID__
+#  include <android/log.h>
+#endif
+
 #include "BLI_linklist.h"
 #include "BLI_listbase.h"
 #include "BLI_math.h"
@@ -559,7 +563,15 @@ int view3d_opengl_select_ex(ViewContext *vc,
   BKE_view_layer_synced_ensure(scene, vc->view_layer);
   const bool use_obedit_skip = (BKE_view_layer_edit_object_get(vc->view_layer) != NULL) &&
                                (vc->obedit == NULL);
+#ifdef __ANDROID__
+  /* 5.3 usa la pipeline select-next en Android; en 3.6 el depth-pick
+   * (ALGO_GL_PICK) no devuelve IDs bajo el dedo (hits=0) aunque el objeto
+   * esté visible. Forzar la ruta sample-query (ALGO_GL_QUERY), igual que
+   * box select, que sí funciona en esta plataforma. */
+  const bool is_pick_select = false;
+#else
   const bool is_pick_select = (U.gpu_flag & USER_GPU_FLAG_NO_DEPT_PICK) == 0;
+#endif
   const bool do_passes = ((is_pick_select == false) &&
                           (select_mode == VIEW3D_SELECT_PICK_NEAREST));
   const bool use_nearest = (is_pick_select && select_mode == VIEW3D_SELECT_PICK_NEAREST);
@@ -750,6 +762,14 @@ int view3d_opengl_select_ex(ViewContext *vc,
   UI_Theme_Restore(&theme_state);
 
 finally:
+
+#ifdef __ANDROID__
+  __android_log_print(ANDROID_LOG_INFO, "OBL.PICKSEL",
+      "is_pick=%d do_passes=%d use_nearest=%d select_mode=%d gpu_mode=%d "
+      "rect=(%d,%d)-(%d,%d) cached=%d hits=%d",
+      is_pick_select, do_passes, use_nearest, (int)select_mode, (int)gpu_select_mode,
+      rect.xmin, rect.ymin, rect.xmax, rect.ymax, GPU_select_is_cached(), hits);
+#endif
 
   if (hits < 0) {
     printf("Too many objects in select buffer\n"); /* XXX make error message */
