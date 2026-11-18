@@ -1853,6 +1853,33 @@ bool GHOST_SystemAndroid::processEvents(bool waitForEvent) {
         }
     }
 //    CLOG_ERROR(&LOG,"GHOST_SystemAndroid::processEvents keyboard 1 %d",m_keyEventStatus.size());
+
+    /* A rotation changes app->contentRect but Android does not generate the
+     * GHOST window-size event Blender relies on to relayout the UI. Detect the
+     * change here, resize the framebuffer and synthesize that event. */
+    if (app && app->window) {
+      const int32_t content_w = app->contentRect.right - app->contentRect.left;
+      const int32_t content_h = app->contentRect.bottom - app->contentRect.top;
+      if (content_w > 0 && content_h > 0 &&
+          (content_w != m_lastContentW || content_h != m_lastContentH))
+      {
+        if (m_lastContentW > 0 && m_lastContentH > 0) {
+          OBL_log("OBL.DPI", "rotation: contentRect %dx%d -> %dx%d",
+                  m_lastContentW, m_lastContentH, content_w, content_h);
+          /* wmInitReInit() re-applies the buffer geometry and recreates the
+           * EGL surface for the swapped window dimensions. */
+          wmInitReInit();
+          GHOST_IWindow *active = getWindowManager()->getActiveWindow();
+          if (active) {
+            pushEvent(processWindowEvent(GHOST_kEventWindowSize, active));
+          }
+          hasEventHandled = true;
+        }
+        m_lastContentW = content_w;
+        m_lastContentH = content_h;
+      }
+    }
+
     /* A finger held still sends nothing, so the long-press is checked once per frame. */
     touchLongPressCheck();
 

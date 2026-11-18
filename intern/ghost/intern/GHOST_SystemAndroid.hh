@@ -36,6 +36,10 @@ class GHOST_SystemAndroid : public GHOST_System {
 private:
     void*m_nativeWindow=nullptr;
     float m_render_scale=1.0f;
+    /* Last contentRect size seen by processEvents(), used to detect a
+     * landscape <-> portrait rotation (Android sends no window size event). */
+    int32_t m_lastContentW = 0;
+    int32_t m_lastContentH = 0;
 public:
     int32_t m_x=-1;
     int32_t m_y=-1;
