@@ -37,7 +37,10 @@
 
 #include "WM_api.h"
 #include "WM_types.h"
-#include "wm_window.h"
+
+/* Declared in wm_window.h, but including that header here would pull window
+ * manager internals into the host makesrna build. */
+extern void WM_window_android_render_scale_check(void);
 
 #include "BLT_lang.h"
 
