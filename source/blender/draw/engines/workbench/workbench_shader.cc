@@ -191,6 +191,15 @@ GPUShader *workbench_shader_transparent_image_get(WORKBENCH_PrivateData *wpd,
 GPUShader *workbench_shader_composite_get(WORKBENCH_PrivateData *wpd)
 {
   int light = wpd->shading.light;
+#ifdef __ANDROID__
+  /* A/B probe: the studio-light composite evaluates 4 BRDF lights per pixel.
+   * FLAT just outputs the material color. Diagnostic only (default off). */
+  char value[PROP_VALUE_MAX] = {};
+  if (__system_property_get("debug.blender.workbench_flat", value) > 0 && value[0] != '\0' &&
+      atoi(value) != 0) {
+    light = V3D_LIGHTING_FLAT;
+  }
+#endif
   struct GPUShader **shader = &e_data.opaque_composite_sh[light];
   BLI_assert(light < MAX_LIGHTING);
 

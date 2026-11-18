@@ -149,6 +149,14 @@ void SceneResources::init(const SceneState &scene_state)
     world_buf.ambient_color = float4(float3(studio_light->light_ambient), 0.0f);
     world_buf.use_specular = shading.flag & V3D_SHADING_SPECULAR_HIGHLIGHT &&
                              studio_light->flag & STUDIOLIGHT_SPECULAR_HIGHLIGHT_PASS;
+#ifdef __ANDROID__
+    /* A/B probe: skip the 4-light specular BRDF (pow/exp2 per pixel). */
+    char value[PROP_VALUE_MAX] = {};
+    if (__system_property_get("debug.blender.workbench_no_specular", value) > 0 &&
+        value[0] != '\0' && atoi(value) != 0) {
+      world_buf.use_specular = false;
+    }
+#endif
   }
   else {
     world_buf.ambient_color = float4(1.0f, 1.0f, 1.0f, 0.0f);
