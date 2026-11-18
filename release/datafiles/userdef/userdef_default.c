@@ -50,7 +50,11 @@ const UserDef U_default = {
                USER_HIDE_DOT | USER_SHOW_GIZMO_NAVIGATE | USER_SHOW_VIEWPORTNAME | USER_SHOW_FPS |
                USER_CONTINUOUS_MOUSE | USER_SAVE_PROMPT),
     .uiflag2 = USER_REGION_OVERLAP,
-    .gpu_flag = USER_GPU_FLAG_OVERLAY_SMOOTH_WIRE | USER_GPU_FLAG_SUBDIVISION_EVALUATION,
+    /* Android (Mali G52): the overlay smooth-wire flag enables a full-screen
+     * line buffer plus a full-screen AA resolve pass every frame. Drop it by
+     * default to cut per-pixel cost and ~9 MB of full-screen textures. Users
+     * can re-enable it in Preferences > Viewport > Smooth Wires if desired. */
+    .gpu_flag = USER_GPU_FLAG_SUBDIVISION_EVALUATION,
     .app_flag = 0,
     /** Default language of English (1), not Automatic (0). */
     .language = 1,
@@ -186,7 +190,11 @@ const UserDef U_default = {
     .factor_display_type = USER_FACTOR_AS_FACTOR,
     .render_display_type = USER_RENDER_DISPLAY_WINDOW,
     .filebrowser_display_type = USER_TEMP_SPACE_DISPLAY_WINDOW,
-    .viewport_aa = 8,
+    /* Workbench TAA renders the whole scene `viewport_aa` times per frame and
+     * keeps an RGBA16F history buffer + 3 SMAA full-screen passes. On Android
+     * this is the single biggest per-pixel cost. Disable by default; the
+     * user can raise it in Preferences > Viewport > Anti-Aliasing. */
+    .viewport_aa = 0,
 
     .walk_navigation =
         {

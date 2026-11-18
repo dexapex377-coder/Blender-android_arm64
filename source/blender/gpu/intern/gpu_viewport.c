@@ -7,7 +7,12 @@
  * System that manages viewport drawing.
  */
 
+#include <stdlib.h>
 #include <string.h>
+
+#ifdef __ANDROID__
+#  include <sys/system_properties.h>
+#endif
 
 #include "BLI_math_vector.h"
 #include "BLI_rect.h"
@@ -116,18 +121,38 @@ struct DRWData **GPU_viewport_data_get(GPUViewport *viewport)
   return &viewport->draw_data;
 }
 
+/* On Android the viewport color target uses RGBA8 instead of RGBA16F: it
+ * halves the bandwidth of every full-screen pass that touches the main color
+ * buffer (composite, AA resolve, OCIO blit) and saves ~4.4 MB per viewport.
+ * `setprop debug.blender.viewport_color 0` restores RGBA16F for A/B testing
+ * (e.g. if HDR highlights in Material Preview matter more than FPS). */
+static bool gpu_viewport_color_rgba8(void)
+{
+#ifdef __ANDROID__
+  char value[PROP_VALUE_MAX] = {};
+  if (__system_property_get("debug.blender.viewport_color", value) > 0 && value[0] != '\0') {
+    return atoi(value) != 0;
+  }
+  return true;
+#else
+  return false;
+#endif
+}
+
 static void gpu_viewport_textures_create(GPUViewport *viewport)
 {
   int *size = viewport->size;
   float empty_pixel[4] = {0.0f, 0.0f, 0.0f, 0.0f};
   eGPUTextureUsage usage = GPU_TEXTURE_USAGE_SHADER_READ | GPU_TEXTURE_USAGE_ATTACHMENT;
+  const eGPUTextureFormat color_format =
+      gpu_viewport_color_rgba8() ? GPU_RGBA8 : GPU_RGBA16F;
 
   if (viewport->color_render_tx[0] == NULL) {
 
     /* NOTE: dtxl_color texture requires write support as it may be written to by the realtime
      * compositor. */
     viewport->color_render_tx[0] = GPU_texture_create_2d(
-        "dtxl_color", UNPACK2(size), 1, GPU_RGBA16F, usage | GPU_TEXTURE_USAGE_SHADER_WRITE, NULL);
+        "dtxl_color", UNPACK2(size), 1, color_format, usage | GPU_TEXTURE_USAGE_SHADER_WRITE, NULL);
     viewport->color_overlay_tx[0] = GPU_texture_create_2d(
         "dtxl_color_overlay", UNPACK2(size), 1, GPU_SRGB8_A8, usage, NULL);
 
@@ -141,7 +166,7 @@ static void gpu_viewport_textures_create(GPUViewport *viewport)
     viewport->color_render_tx[1] = GPU_texture_create_2d("dtxl_color_stereo",
                                                          UNPACK2(size),
                                                          1,
-                                                         GPU_RGBA16F,
+                                                         color_format,
                                                          usage | GPU_TEXTURE_USAGE_SHADER_WRITE,
                                                          NULL);
     viewport->color_overlay_tx[1] = GPU_texture_create_2d(
