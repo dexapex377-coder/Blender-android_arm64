@@ -139,6 +139,19 @@ static bool gpu_viewport_color_rgba8(void)
 #endif
 }
 
+/* A/B probe: D16 depth instead of D24S8. Halves depth read/write bandwidth on
+ * the Mali but drops stencil, so it is opt-in via `debug.blender.viewport_depth 1`. */
+static bool gpu_viewport_depth_d16(void)
+{
+#ifdef __ANDROID__
+  char value[PROP_VALUE_MAX] = {};
+  if (__system_property_get("debug.blender.viewport_depth", value) > 0 && value[0] != '\0') {
+    return atoi(value) != 0;
+  }
+#endif
+  return false;
+}
+
 static void gpu_viewport_textures_create(GPUViewport *viewport)
 {
   int *size = viewport->size;
@@ -180,16 +193,25 @@ static void gpu_viewport_textures_create(GPUViewport *viewport)
 
   /* Can be shared with GPUOffscreen. */
   if (viewport->depth_tx == NULL) {
-    /* Depth texture can be read back by gizmos #view3d_depths_create. */
+    /* Depth texture can be read back by gizmos #view3d_depths_create.
+     * D16 is an opt-in A/B probe: see gpu_viewport_depth_d16(). */
+    const bool use_d16 = gpu_viewport_depth_d16();
     viewport->depth_tx = GPU_texture_create_2d("dtxl_depth",
                                                UNPACK2(size),
                                                1,
-                                               GPU_DEPTH24_STENCIL8,
+                                               use_d16 ? GPU_DEPTH_COMPONENT16
+                                                       : GPU_DEPTH24_STENCIL8,
                                                usage | GPU_TEXTURE_USAGE_HOST_READ,
                                                NULL);
     if (GPU_clear_viewport_workaround()) {
-      static int depth_clear = 0;
-      GPU_texture_clear(viewport->depth_tx, GPU_DATA_UINT_24_8, &depth_clear);
+      if (use_d16) {
+        const float depth_clear = 1.0f;
+        GPU_texture_clear(viewport->depth_tx, GPU_DATA_FLOAT, &depth_clear);
+      }
+      else {
+        static int depth_clear = 0;
+        GPU_texture_clear(viewport->depth_tx, GPU_DATA_UINT_24_8, &depth_clear);
+      }
     }
   }
 
