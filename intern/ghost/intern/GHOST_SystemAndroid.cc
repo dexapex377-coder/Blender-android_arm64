@@ -12,6 +12,7 @@
 #include "OBLButtonID.h"
 #include <android/input.h>
 #include <android/log.h>
+#include <android/configuration.h>
 #include <CLG_log.h>
 #include <zconf.h>
 #include <android/native_window.h>
@@ -1597,6 +1598,36 @@ GHOST_SystemAndroid::GHOST_SystemAndroid(void *nativeWindow) : GHOST_System() { 
     app->onInputEvent = engine_handle_input;
 }
 
+void GHOST_SystemAndroid::getNativeDisplaySize(int &width, int &height) const
+{
+  width = height = 0;
+  struct android_app *app = (struct android_app *)m_nativeWindow;
+  /* contentRect has the exact usable size (system bars excluded), but on
+   * rotation Android updates it asynchronously: it can still be landscape
+   * while the surface is already portrait. AConfiguration is refreshed
+   * synchronously in APP_CMD_CONFIG_CHANGED, so use its orientation to fix
+   * the axis order without changing the exact pixel dimensions. */
+  if (app && app->contentRect.right > app->contentRect.left &&
+      app->contentRect.bottom > app->contentRect.top)
+  {
+    width = app->contentRect.right - app->contentRect.left;
+    height = app->contentRect.bottom - app->contentRect.top;
+  }
+  else if (app && app->window) {
+    width = ANativeWindow_getWidth(app->window);
+    height = ANativeWindow_getHeight(app->window);
+  }
+
+  if (app && app->config && width > 0 && height > 0) {
+    const int32_t orient = AConfiguration_getOrientation(app->config);
+    const bool config_landscape = (orient == ACONFIGURATION_ORIENTATION_LAND);
+    const bool size_landscape = (width > height);
+    if (orient > 0 && config_landscape != size_landscape) {
+      std::swap(width, height);
+    }
+  }
+}
+
 void GHOST_SystemAndroid::applyRenderScale(void *native_window)
 {
   ANativeWindow *win = (ANativeWindow *)native_window;
@@ -1604,18 +1635,10 @@ void GHOST_SystemAndroid::applyRenderScale(void *native_window)
     return;
   }
 
-  struct android_app *app = (struct android_app *)m_nativeWindow;
   int native_w = 0;
   int native_h = 0;
-  /* contentRect is the display size and is not changed by setBuffersGeometry,
-   * so repeated scale changes cannot shrink the buffers cumulatively. */
-  if (app && app->contentRect.right > app->contentRect.left &&
-      app->contentRect.bottom > app->contentRect.top)
-  {
-    native_w = app->contentRect.right - app->contentRect.left;
-    native_h = app->contentRect.bottom - app->contentRect.top;
-  }
-  else {
+  getNativeDisplaySize(native_w, native_h);
+  if (native_w <= 0 || native_h <= 0) {
     native_w = ANativeWindow_getWidth(win);
     native_h = ANativeWindow_getHeight(win);
   }
@@ -1854,27 +1877,42 @@ bool GHOST_SystemAndroid::processEvents(bool waitForEvent) {
     }
 //    CLOG_ERROR(&LOG,"GHOST_SystemAndroid::processEvents keyboard 1 %d",m_keyEventStatus.size());
 
-    /* A rotation changes app->contentRect but Android does not generate the
-     * GHOST window-size event Blender relies on to relayout the UI. Detect the
-     * change here, resize the framebuffer and synthesize that event. */
+    /* Rotation: Android resizes the surface under the activity but never sends the
+     * GHOST window-size event Blender needs to relayout the UI. Two signals are
+     * checked: AConfiguration orientation (reliable) and the contentRect size as
+     * a fallback. Either one triggers a full framebuffer + surface rebuild. */
     if (app && app->window) {
+      const int32_t orient = (app->config) ? AConfiguration_getOrientation(app->config) : -1;
       const int32_t content_w = app->contentRect.right - app->contentRect.left;
       const int32_t content_h = app->contentRect.bottom - app->contentRect.top;
-      if (content_w > 0 && content_h > 0 &&
-          (content_w != m_lastContentW || content_h != m_lastContentH))
-      {
-        if (m_lastContentW > 0 && m_lastContentH > 0) {
-          OBL_log("OBL.DPI", "rotation: contentRect %dx%d -> %dx%d",
-                  m_lastContentW, m_lastContentH, content_w, content_h);
-          /* wmInitReInit() re-applies the buffer geometry and recreates the
-           * EGL surface for the swapped window dimensions. */
-          wmInitReInit();
-          GHOST_IWindow *active = getWindowManager()->getActiveWindow();
-          if (active) {
-            pushEvent(processWindowEvent(GHOST_kEventWindowSize, active));
-          }
-          hasEventHandled = true;
+
+      const bool orient_changed = (m_lastConfigOrientation >= 0 && orient >= 0 &&
+                                   orient != m_lastConfigOrientation);
+      const bool size_changed = (content_w > 0 && content_h > 0 &&
+                                 m_lastContentW > 0 && m_lastContentH > 0 &&
+                                 (content_w != m_lastContentW || content_h != m_lastContentH));
+
+      if (orient_changed || size_changed) {
+        OBL_log("OBL.DPI", "rotation: orient %d -> %d contentRect %dx%d -> %dx%d",
+                m_lastConfigOrientation, orient, m_lastContentW, m_lastContentH,
+                content_w, content_h);
+        /* wmInitReInit() re-applies the buffer geometry and recreates the EGL
+         * surface for the swapped window dimensions (preserves the GL context). */
+        wmInitReInit();
+        GHOST_IWindow *active = getWindowManager()->getActiveWindow();
+        if (active) {
+          /* 5.3 sends BOTH: WindowSize relayouts, WindowUpdate forces a repaint.
+           * With only WindowSize the screen can stretch/reflow incorrectly. */
+          pushEvent(processWindowEvent(GHOST_kEventWindowSize, active));
+          pushEvent(processWindowEvent(GHOST_kEventWindowUpdate, active));
         }
+        hasEventHandled = true;
+      }
+
+      if (orient >= 0) {
+        m_lastConfigOrientation = orient;
+      }
+      if (content_w > 0 && content_h > 0) {
         m_lastContentW = content_w;
         m_lastContentH = content_h;
       }
@@ -2068,13 +2106,17 @@ GHOST_SystemAndroid::getMainDisplayDimensions(uint32_t &width, uint32_t &height)
 //    width=3200;
 //    height=2136;
 
+    int native_w = 0;
+    int native_h = 0;
+    getNativeDisplaySize(native_w, native_h);
     struct android_app *app = (struct android_app *) m_nativeWindow;
-    width = obl_scaled_dim(app->contentRect.right);
-    height = obl_scaled_dim(app->contentRect.bottom);
+    width = obl_scaled_dim(native_w);
+    height = obl_scaled_dim(native_h);
     OBL_log("OBL.DPI",
-        "getMainDisplayDimensions: contentRect=%d,%d,%d,%d width=%d height=%d scale=%.3f",
-        app->contentRect.left, app->contentRect.top,
-        app->contentRect.right, app->contentRect.bottom,
+        "getMainDisplayDimensions: native=%dx%d contentRect=%d,%d,%d,%d width=%d height=%d scale=%.3f",
+        native_w, native_h,
+        app ? app->contentRect.left : -1, app ? app->contentRect.top : -1,
+        app ? app->contentRect.right : -1, app ? app->contentRect.bottom : -1,
         width, height, g_render_scale);
 }
 

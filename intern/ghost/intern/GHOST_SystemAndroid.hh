@@ -40,6 +40,8 @@ private:
      * landscape <-> portrait rotation (Android sends no window size event). */
     int32_t m_lastContentW = 0;
     int32_t m_lastContentH = 0;
+    /* Orientation from AConfiguration, the reliable signal on rotation.  -1 = unset. */
+    int32_t m_lastConfigOrientation = -1;
 public:
     int32_t m_x=-1;
     int32_t m_y=-1;
@@ -54,6 +56,9 @@ public:
   /* Modifiers held by a toggle shortcut, OR'ed into getModifierKeys(). */
     int32_t latched_meta_=0;
 private:
+    /* Native display size (before render scale). Prefers AConfiguration, which
+     * Android updates synchronously on rotation, over app->contentRect (async). */
+    void getNativeDisplaySize(int &width, int &height) const;
     void applyRenderScale(void *native_window);
     void applyRenderScale();
     void showHidenKeyboard(bool show,
