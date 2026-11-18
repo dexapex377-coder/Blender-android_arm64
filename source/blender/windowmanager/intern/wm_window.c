@@ -54,6 +54,11 @@
 #  include "wm_xr.h"
 #endif
 
+#ifdef __ANDROID__
+/* Implemented in GHOST_SystemAndroid.cc (declared extern "C" there). */
+extern void OBL_log(const char *tag, const char *fmt, ...);
+#endif
+
 #include "ED_anim_api.h"
 #include "ED_fileselect.h"
 #include "ED_render.h"
@@ -515,11 +520,28 @@ void WM_window_set_dpi(const wmWindow *win)
     CLAMP(U.ui_scale, 0.25f, 4.0f);
   }
 
+#ifdef __ANDROID__
+  /* Android re-scales the reduced framebuffer back up to the native display
+   * size. Without compensation every UI element is drawn too large in buffer
+   * pixels and then enlarged again by the compositor, which looks like a
+   * huge UI zoom with cropped panels. Divide the DPI by the same factor so
+   * the on-screen size stays the same as with render scale 1.0. */
+  if (U.android_render_scale > 1.0f) {
+    auto_dpi /= U.android_render_scale;
+  }
+#endif
+
   /* Blender's UI drawing assumes DPI 72 as a good default following macOS
    * while Windows and Linux use DPI 96. GHOST assumes a default 96 so we
    * remap the DPI to Blender's convention. */
   auto_dpi *= GHOST_GetNativePixelSize(win->ghostwin);
   U.dpi = auto_dpi * U.ui_scale * (72.0 / 96.0f);
+
+#ifdef __ANDROID__
+  OBL_log("OBL.DPI",
+          "WM_window_set_dpi: auto=%.3f ui=%.3f render=%.3f -> U.dpi=%.3f",
+          auto_dpi, U.ui_scale, U.android_render_scale, U.dpi);
+#endif
 
   /* Automatically set larger pixel size for high DPI. */
   int pixelsize = max_ii(1, (int)(U.dpi / 64));
@@ -1702,6 +1724,27 @@ void wm_ghost_init(bContext *C)
 #ifdef __ANDROID__
 static float g_applied_android_render_scale = 1.0f;
 
+/* Recompute DPI for every open window after the render scale changes, so the
+ * UI immediately uses the new (compensated) size instead of waiting for a
+ * DPI event that Android never sends for a buffer geometry change. */
+static void wm_window_android_refresh_dpi(void)
+{
+  wmWindowManager *wm = G_MAIN ? G_MAIN->wm.first : NULL;
+  if (wm == NULL) {
+    return;
+  }
+  for (wmWindow *win = wm->windows.first; win; win = win->next) {
+    if (win->ghostwin) {
+      WM_window_set_dpi(win);
+      /* GHOST client bounds now report the reduced dimensions; without this
+       * the screen layout keeps the native size and the UI is cropped. */
+      wm_window_update_size_position(win);
+    }
+  }
+  /* Fonts are cached per DPI level; clear them so the new size is used now. */
+  BLF_cache_clear();
+}
+
 void WM_window_android_render_scale_apply(float scale)
 {
   if (!(scale >= 1.0f && scale <= 3.0f)) {
@@ -1710,6 +1753,7 @@ void WM_window_android_render_scale_apply(float scale)
   if (g_system && (fabsf(scale - g_applied_android_render_scale) > 0.001f)) {
     GHOST_SetAndroidRenderScale(g_system, scale);
     g_applied_android_render_scale = scale;
+    wm_window_android_refresh_dpi();
   }
 }
 
