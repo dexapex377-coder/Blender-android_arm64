@@ -990,6 +990,7 @@ typedef struct UserDef {
 
   /** Android only: render scale divisor (1.0 = native). Old files store 0, treated as 1.0. */
   float android_render_scale;
+  char _pad14[4];
 
   /** Runtime data (keep last). */
   UserDef_Runtime runtime;
