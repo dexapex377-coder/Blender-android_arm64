@@ -152,6 +152,20 @@ static bool gpu_viewport_depth_d16(void)
   return false;
 }
 
+/* A/B probe: skip the per-pixel OCIO transform in the final screen blit and
+ * use the cheap overlay-merge shader instead. Changes the displayed colors,
+ * so it is diagnostic only (default off). */
+static bool gpu_viewport_ocio_bypass(void)
+{
+#ifdef __ANDROID__
+  char value[PROP_VALUE_MAX] = {};
+  if (__system_property_get("debug.blender.ocio_bypass", value) > 0 && value[0] != '\0') {
+    return atoi(value) != 0;
+  }
+#endif
+  return false;
+}
+
 static void gpu_viewport_textures_create(GPUViewport *viewport)
 {
   int *size = viewport->size;
@@ -477,7 +491,7 @@ static void gpu_viewport_draw_colormanaged(GPUViewport *viewport,
 
   bool use_ocio = false;
 
-  if (viewport->do_color_management && display_colorspace) {
+  if (viewport->do_color_management && display_colorspace && !gpu_viewport_ocio_bypass()) {
     /* During the binding process the last used VertexFormat is tested and can assert as it is not
      * valid. By calling the `immVertexFormat` the last used VertexFormat is reset and the assert
      * does not happen. This solves a chicken and egg problem when using GPUBatches. GPUBatches

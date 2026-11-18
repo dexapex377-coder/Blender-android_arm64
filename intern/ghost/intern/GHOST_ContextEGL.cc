@@ -10,6 +10,11 @@
 #include <epoxy/egl.h>
 #include "GHOST_ContextEGL.hh"
 
+#ifdef __ANDROID__
+#  include <android/log.h>
+#  include <chrono>
+#endif
+
 #include <set>
 #include <sstream>
 #include <vector>
@@ -240,6 +245,25 @@ GHOST_ContextEGL::~GHOST_ContextEGL()
 
 GHOST_TSuccess GHOST_ContextEGL::swapBuffers()
 {
+#ifdef __ANDROID__
+  /* Presented-frame telemetry. Counts real EGL swaps (unlike OBL.FPS, which
+   * counts main-loop iterations and can report >100 fps when Blender skips
+   * redraws). One line every 2 seconds. */
+  {
+    static auto s_last = std::chrono::steady_clock::now();
+    static int s_swaps = 0;
+    s_swaps++;
+    const auto now = std::chrono::steady_clock::now();
+    const double elapsed = std::chrono::duration<double>(now - s_last).count();
+    if (elapsed >= 2.0) {
+      __android_log_print(ANDROID_LOG_INFO, "OBL.SWAP",
+                          "%.1f fps (%d swaps in %.2fs)",
+                          (double)s_swaps / elapsed, s_swaps, elapsed);
+      s_last = now;
+      s_swaps = 0;
+    }
+  }
+#endif
   return EGL_CHK(::eglSwapBuffers(m_display, m_surface)) ? GHOST_kSuccess : GHOST_kFailure;
 }
 
