@@ -51,6 +51,7 @@ static struct {
   struct GPUShader *dof_resolve_sh;
 
   struct GPUShader *aa_accum_sh;
+  struct GPUShader *fxaa_sh;
   struct GPUShader *smaa_sh[3];
 
   struct GPUShader *volume_sh[2][2][3][2];
@@ -328,6 +329,14 @@ GPUShader *workbench_shader_antialiasing_accumulation_get(void)
   return e_data.aa_accum_sh;
 }
 
+GPUShader *workbench_shader_fxaa_get(void)
+{
+  if (e_data.fxaa_sh == nullptr) {
+    e_data.fxaa_sh = GPU_shader_create_from_info_name("workbench_fxaa");
+  }
+  return e_data.fxaa_sh;
+}
+
 GPUShader *workbench_shader_antialiasing_get(int stage)
 {
   BLI_assert(stage < 3);
@@ -400,6 +409,7 @@ void workbench_shader_free(void)
     struct GPUShader **sh_array = &e_data.smaa_sh[0];
     DRW_SHADER_FREE_SAFE(sh_array[j]);
   }
+  DRW_SHADER_FREE_SAFE(e_data.fxaa_sh);
   for (int j = 0; j < sizeof(e_data.volume_sh) / sizeof(void *); j++) {
     struct GPUShader **sh_array = &e_data.volume_sh[0][0][0][0];
     DRW_SHADER_FREE_SAFE(sh_array[j]);

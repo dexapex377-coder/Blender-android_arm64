@@ -153,6 +153,7 @@ typedef struct WORKBENCH_PassList {
   struct DRWPass *aa_edge_ps;
   struct DRWPass *aa_weight_ps;
   struct DRWPass *aa_resolve_ps;
+  struct DRWPass *aa_fxaa_ps;
 } WORKBENCH_PassList;
 
 typedef struct WORKBENCH_Data {
@@ -272,6 +273,8 @@ typedef struct WORKBENCH_PrivateData {
   /* Temporal Antialiasing */
   /** Total number of samples to after which TAA stops accumulating samples. */
   int taa_sample_len;
+  /** Android OBL: use the cheap one-pass FXAA resolve instead of SMAA/TAA. */
+  bool fxaa_only;
   /** Total number of samples of the previous TAA. When changed TAA will be reset. */
   int taa_sample_len_previous;
   /** Current TAA sample index in [0..taa_sample_len[ range. */
@@ -435,6 +438,7 @@ GPUShader *workbench_shader_cavity_get(bool cavity, bool curvature);
 GPUShader *workbench_shader_outline_get(void);
 
 GPUShader *workbench_shader_antialiasing_accumulation_get(void);
+GPUShader *workbench_shader_fxaa_get(void);
 GPUShader *workbench_shader_antialiasing_get(int stage);
 
 GPUShader *workbench_shader_volume_get(bool slice,

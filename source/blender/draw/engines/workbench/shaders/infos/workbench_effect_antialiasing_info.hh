@@ -17,6 +17,20 @@ GPU_SHADER_CREATE_INFO(workbench_taa)
 /** \} */
 
 /* -------------------------------------------------------------------- */
+/** \name FXAA (cheap Android one-pass resolve)
+ * \{ */
+
+GPU_SHADER_CREATE_INFO(workbench_fxaa)
+    .define("FXAA_QUALITY__PRESET", "10")
+    .sampler(0, ImageType::FLOAT_2D, "colorBuffer")
+    .fragment_out(0, Type::VEC4, "fragColor")
+    .fragment_source("workbench_effect_fxaa_frag.glsl")
+    .additional_info("draw_fullscreen")
+    .do_static_compilation(true);
+
+/** \} */
+
+/* -------------------------------------------------------------------- */
 /** \name SMAA
  * \{ */
 

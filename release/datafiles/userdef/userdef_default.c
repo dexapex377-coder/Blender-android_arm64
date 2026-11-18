@@ -66,7 +66,7 @@ const UserDef U_default = {
     .audiochannels = 2,
 
     .ui_scale = 1.8,
-    .android_render_scale = 1.0f,
+    .android_render_scale = 1.25f,
     .ui_line_width = 0,
 
     /** Default so DPI is detected automatically. */

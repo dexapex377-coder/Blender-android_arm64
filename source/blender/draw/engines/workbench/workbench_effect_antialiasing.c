@@ -16,6 +16,12 @@
  * to the scene buffer. We softly blend between SMAA and TAA to avoid really harsh transitions.
  */
 
+#include <stdlib.h>
+
+#ifdef __ANDROID__
+#  include <sys/system_properties.h>
+#endif
+
 #include "ED_screen.h"
 
 #include "BLI_jitter_2d.h"
@@ -32,6 +38,22 @@ static struct {
   float jitter_16[16][2];
   float jitter_32[32][2];
 } e_data = {false};
+
+/* OBL Android probe. Workbench AA stays off in user preferences; when this
+ * probe is on we enable only the cheap one-pass FXAA resolve. Default ON on
+ * Android, `setprop debug.blender.obl_fxaa 0` restores plain no-AA for A/B. */
+static bool obl_fxaa_enabled(void)
+{
+#ifdef __ANDROID__
+  char value[PROP_VALUE_MAX] = {};
+  if (__system_property_get("debug.blender.obl_fxaa", value) > 0 && value[0] != '\0') {
+    return atoi(value) != 0;
+  }
+  return true;
+#else
+  return false;
+#endif
+}
 
 static void workbench_taa_jitter_init_order(float (*table)[2], int num)
 {
@@ -100,6 +122,14 @@ int workbench_antialiasing_sample_count_get(WORKBENCH_PrivateData *wpd)
   const DRWContextState *draw_ctx = DRW_context_state_get();
   const Scene *scene = draw_ctx->scene;
 
+  wpd->fxaa_only = false;
+  if (!DRW_state_is_image_render() && obl_fxaa_enabled()) {
+    wpd->fxaa_only = true;
+    /* Same length as the old "FXAA" enum, but this path never creates the
+     * SMAA edge/weight passes or the TAA history accumulation. */
+    return 1;
+  }
+
   if (wpd->is_navigating || wpd->is_playback) {
     /* Only draw using SMAA or no AA when navigating. */
     return min_ii(wpd->preferences->viewport_aa, 1);
@@ -148,6 +178,7 @@ void workbench_antialiasing_engine_init(WORKBENCH_Data *vedata)
   WORKBENCH_FramebufferList *fbl = vedata->fbl;
   WORKBENCH_TextureList *txl = vedata->txl;
   WORKBENCH_PrivateData *wpd = vedata->stl->wpd;
+  DefaultTextureList *dtxl = DRW_viewport_texture_list_get();
   DrawEngineType *owner = (DrawEngineType *)&workbench_antialiasing_engine_init;
 
   wpd->view = NULL;
@@ -195,6 +226,24 @@ void workbench_antialiasing_engine_init(WORKBENCH_Data *vedata)
   if (wpd->taa_sample_len > 0) {
     workbench_taa_jitter_init();
     eGPUTextureUsage usage = GPU_TEXTURE_USAGE_SHADER_READ | GPU_TEXTURE_USAGE_ATTACHMENT;
+
+    if (wpd->fxaa_only) {
+      /* Plain copy of the viewport color: no HDR accumulation buffer, no SMAA
+       * area/search textures, no depth history. Match the color format so
+       * GPU_texture_copy() never hits a format/type assert on A/B runs. */
+      eGPUTextureFormat history_format = GPU_RGBA8;
+      if (dtxl->color != NULL) {
+        history_format = GPU_texture_format(dtxl->color);
+      }
+      DRW_texture_ensure_fullscreen_2d_ex(
+          &txl->history_buffer_tx, history_format, usage, DRW_TEX_FILTER);
+      DRW_TEXTURE_FREE_SAFE(txl->depth_buffer_tx);
+      DRW_TEXTURE_FREE_SAFE(txl->depth_buffer_in_front_tx);
+      DRW_TEXTURE_FREE_SAFE(txl->smaa_search_tx);
+      DRW_TEXTURE_FREE_SAFE(txl->smaa_area_tx);
+      return;
+    }
+
     DRW_texture_ensure_fullscreen_2d_ex(
         &txl->history_buffer_tx, GPU_RGBA16F, usage, DRW_TEX_FILTER);
     DRW_texture_ensure_fullscreen_2d_ex(&txl->depth_buffer_tx, GPU_DEPTH24_STENCIL8, usage, 0);
@@ -298,6 +347,16 @@ void workbench_antialiasing_cache_init(WORKBENCH_Data *vedata)
   DRWShadingGroup *grp = NULL;
 
   if (wpd->taa_sample_len == 0) {
+    return;
+  }
+
+  if (wpd->fxaa_only) {
+    DRW_PASS_CREATE(psl->aa_fxaa_ps, DRW_STATE_WRITE_COLOR);
+
+    GPUShader *sh = workbench_shader_fxaa_get();
+    grp = DRW_shgroup_create(sh, psl->aa_fxaa_ps);
+    DRW_shgroup_uniform_texture_ex(grp, "colorBuffer", txl->history_buffer_tx, GPU_SAMPLER_DEFAULT);
+    DRW_shgroup_call_procedural_triangles(grp, NULL, 1);
     return;
   }
 
@@ -433,6 +492,18 @@ void workbench_antialiasing_draw_pass(WORKBENCH_Data *vedata)
   if (wpd->taa_sample_len == 0) {
     /* AA disabled. */
     /* Just set sample to 1 to avoid rendering indefinitely. */
+    wpd->taa_sample = 1;
+    wpd->valid_history = false;
+    return;
+  }
+
+  if (wpd->fxaa_only) {
+    /* One plain copy into the history texture (same RGBA8 format as the
+     * viewport color), then a single FXAA resolve back to the screen buffer.
+     * No TAA jitter, no SMAA edge/weight passes, no depth copies. */
+    GPU_texture_copy(txl->history_buffer_tx, dtxl->color);
+    GPU_framebuffer_bind(dfbl->default_fb);
+    DRW_draw_pass(psl->aa_fxaa_ps);
     wpd->taa_sample = 1;
     wpd->valid_history = false;
     return;

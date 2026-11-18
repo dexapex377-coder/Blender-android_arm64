@@ -512,6 +512,7 @@ set(GLSL_SRC
   engines/workbench/shaders/workbench_curvature_lib.glsl
   engines/workbench/shaders/workbench_effect_cavity_frag.glsl
   engines/workbench/shaders/workbench_effect_dof_frag.glsl
+  engines/workbench/shaders/workbench_effect_fxaa_frag.glsl
   engines/workbench/shaders/workbench_effect_outline_frag.glsl
   engines/workbench/shaders/workbench_effect_smaa_frag.glsl
   engines/workbench/shaders/workbench_effect_smaa_vert.glsl
