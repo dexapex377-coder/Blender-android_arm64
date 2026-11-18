@@ -36,12 +36,18 @@ class GHOST_SystemAndroid : public GHOST_System {
 private:
     void*m_nativeWindow=nullptr;
     float m_render_scale=1.0f;
-    /* Last contentRect size seen by processEvents(), used to detect a
-     * landscape <-> portrait rotation (Android sends no window size event). */
-    int32_t m_lastContentW = 0;
-    int32_t m_lastContentH = 0;
-    /* Orientation from AConfiguration, the reliable signal on rotation.  -1 = unset. */
-    int32_t m_lastConfigOrientation = -1;
+    /* Native (pre-render-scale) display size. On rotation only the axis order
+     * changes, so swap these instead of trusting asynchronously-updated
+     * contentRect / AConfiguration values. */
+    int32_t m_nativeDisplayW = 0;
+    int32_t m_nativeDisplayH = 0;
+    /* Buffer geometry last applied to the ANativeWindow. */
+    int32_t m_appliedBufferW = 0;
+    int32_t m_appliedBufferH = 0;
+    /* What ANativeWindow_getWidth/Height reported right after that geometry
+     * was applied. Compared against the live value to detect a real resize. */
+    int32_t m_lastWindowW = 0;
+    int32_t m_lastWindowH = 0;
 public:
     int32_t m_x=-1;
     int32_t m_y=-1;

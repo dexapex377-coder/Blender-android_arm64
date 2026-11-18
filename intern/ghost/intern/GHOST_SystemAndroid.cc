@@ -1600,30 +1600,23 @@ GHOST_SystemAndroid::GHOST_SystemAndroid(void *nativeWindow) : GHOST_System() { 
 
 void GHOST_SystemAndroid::getNativeDisplaySize(int &width, int &height) const
 {
-  width = height = 0;
-  struct android_app *app = (struct android_app *)m_nativeWindow;
-  /* contentRect has the exact usable size (system bars excluded), but on
-   * rotation Android updates it asynchronously: it can still be landscape
-   * while the surface is already portrait. AConfiguration is refreshed
-   * synchronously in APP_CMD_CONFIG_CHANGED, so use its orientation to fix
-   * the axis order without changing the exact pixel dimensions. */
-  if (app && app->contentRect.right > app->contentRect.left &&
-      app->contentRect.bottom > app->contentRect.top)
-  {
-    width = app->contentRect.right - app->contentRect.left;
-    height = app->contentRect.bottom - app->contentRect.top;
-  }
-  else if (app && app->window) {
-    width = ANativeWindow_getWidth(app->window);
-    height = ANativeWindow_getHeight(app->window);
-  }
+  /* Keep a single source of truth for the native size. contentRect and
+   * AConfiguration are updated asynchronously by Android and can disagree
+   * during rotation, which produced a swapped buffer (half-black viewport).
+   * m_nativeDisplayW/H is initialized from the ANativeWindow at startup and
+   * only its axis order changes on rotation. */
+  width = m_nativeDisplayW;
+  height = m_nativeDisplayH;
 
-  if (app && app->config && width > 0 && height > 0) {
-    const int32_t orient = AConfiguration_getOrientation(app->config);
-    const bool config_landscape = (orient == ACONFIGURATION_ORIENTATION_LAND);
-    const bool size_landscape = (width > height);
-    if (orient > 0 && config_landscape != size_landscape) {
-      std::swap(width, height);
+  struct android_app *app = (struct android_app *)m_nativeWindow;
+  if (width <= 0 || height <= 0) {
+    if (app && app->window) {
+      width = ANativeWindow_getWidth(app->window);
+      height = ANativeWindow_getHeight(app->window);
+    }
+    if ((width <= 0 || height <= 0) && app) {
+      width = app->contentRect.right - app->contentRect.left;
+      height = app->contentRect.bottom - app->contentRect.top;
     }
   }
 }
@@ -1635,30 +1628,49 @@ void GHOST_SystemAndroid::applyRenderScale(void *native_window)
     return;
   }
 
-  int native_w = 0;
-  int native_h = 0;
-  getNativeDisplaySize(native_w, native_h);
-  if (native_w <= 0 || native_h <= 0) {
-    native_w = ANativeWindow_getWidth(win);
-    native_h = ANativeWindow_getHeight(win);
-  }
-  if (native_w <= 0 || native_h <= 0) {
-    return;
+  if (m_nativeDisplayW <= 0 || m_nativeDisplayH <= 0) {
+    /* Startup: the ANativeWindow still has the display geometry (no render
+     * scale applied yet). Latched once; rotation only swaps the axes. */
+    int32_t w0 = ANativeWindow_getWidth(win);
+    int32_t h0 = ANativeWindow_getHeight(win);
+    if (w0 <= 0 || h0 <= 0) {
+      struct android_app *app0 = (struct android_app *)m_nativeWindow;
+      if (app0) {
+        w0 = app0->contentRect.right - app0->contentRect.left;
+        h0 = app0->contentRect.bottom - app0->contentRect.top;
+      }
+    }
+    m_nativeDisplayW = w0;
+    m_nativeDisplayH = h0;
+    OBL_log("OBL.ROT", "latched native display %dx%d (win=%dx%d)",
+            m_nativeDisplayW, m_nativeDisplayH,
+            ANativeWindow_getWidth(win), ANativeWindow_getHeight(win));
   }
 
-  const int w = obl_scaled_dim(native_w);
-  const int h = obl_scaled_dim(native_h);
+  const int w = obl_scaled_dim(m_nativeDisplayW);
+  const int h = obl_scaled_dim(m_nativeDisplayH);
+  if (w <= 0 || h <= 0) {
+    return;
+  }
   if (w == g_last_buffer_w && h == g_last_buffer_h) {
     return;
   }
   g_last_buffer_w = w;
   g_last_buffer_h = h;
+  m_appliedBufferW = w;
+  m_appliedBufferH = h;
   /* Format 0 keeps the window's current pixel format. The EGL surface follows
    * the native window resize; recreating it here would be needlessly costly. */
   ANativeWindow_setBuffersGeometry(win, w, h, 0);
+  /* Latched AFTER setBuffersGeometry: some Android versions report the display
+   * size here, others the reduced buffer size. Comparing the same API against
+   * itself makes the resize detection work in both cases. */
+  m_lastWindowW = ANativeWindow_getWidth(win);
+  m_lastWindowH = ANativeWindow_getHeight(win);
   __android_log_print(ANDROID_LOG_INFO, "OBL.RENDERSCALE",
-                      "native=%dx%d buffers=%dx%d scale=%.3f",
-                      native_w, native_h, w, h, g_render_scale);
+                      "native=%dx%d buffers=%dx%d reports=%dx%d scale=%.3f",
+                      m_nativeDisplayW, m_nativeDisplayH, w, h,
+                      m_lastWindowW, m_lastWindowH, g_render_scale);
 }
 
 void GHOST_SystemAndroid::applyRenderScale()
@@ -1877,44 +1889,43 @@ bool GHOST_SystemAndroid::processEvents(bool waitForEvent) {
     }
 //    CLOG_ERROR(&LOG,"GHOST_SystemAndroid::processEvents keyboard 1 %d",m_keyEventStatus.size());
 
-    /* Rotation: Android resizes the surface under the activity but never sends the
-     * GHOST window-size event Blender needs to relayout the UI. Two signals are
-     * checked: AConfiguration orientation (reliable) and the contentRect size as
-     * a fallback. Either one triggers a full framebuffer + surface rebuild. */
-    if (app && app->window) {
-      const int32_t orient = (app->config) ? AConfiguration_getOrientation(app->config) : -1;
-      const int32_t content_w = app->contentRect.right - app->contentRect.left;
-      const int32_t content_h = app->contentRect.bottom - app->contentRect.top;
+    /* Rotation: Android resizes the ANativeWindow under the activity but never
+     * sends the GHOST window-size event Blender needs to relayout the UI.
+     * Detect it by comparing the window's real geometry with the geometry we
+     * last applied. contentRect/AConfiguration are updated at different times
+     * and using them here produced a swapped buffer (half-black viewport). */
+    if (app && app->window && m_lastWindowW > 0 && m_lastWindowH > 0) {
+      const int32_t win_w = ANativeWindow_getWidth(app->window);
+      const int32_t win_h = ANativeWindow_getHeight(app->window);
+      const bool window_changed = (win_w > 0 && win_h > 0 &&
+                                   (win_w != m_lastWindowW ||
+                                    win_h != m_lastWindowH));
+      if (window_changed) {
+        const bool was_landscape = (m_nativeDisplayW > m_nativeDisplayH);
+        const bool now_landscape = (win_w > win_h);
+        if (was_landscape != now_landscape) {
+          std::swap(m_nativeDisplayW, m_nativeDisplayH);
+        }
+        else {
+          /* Same orientation (multi-window / IME): adopt the reported size. */
+          m_nativeDisplayW = win_w;
+          m_nativeDisplayH = win_h;
+        }
+        OBL_log("OBL.ROT", "window resize: win=%dx%d latched=%dx%d applied=%dx%d native=%dx%d",
+                win_w, win_h, m_lastWindowW, m_lastWindowH,
+                m_appliedBufferW, m_appliedBufferH,
+                m_nativeDisplayW, m_nativeDisplayH);
 
-      const bool orient_changed = (m_lastConfigOrientation >= 0 && orient >= 0 &&
-                                   orient != m_lastConfigOrientation);
-      const bool size_changed = (content_w > 0 && content_h > 0 &&
-                                 m_lastContentW > 0 && m_lastContentH > 0 &&
-                                 (content_w != m_lastContentW || content_h != m_lastContentH));
-
-      if (orient_changed || size_changed) {
-        OBL_log("OBL.DPI", "rotation: orient %d -> %d contentRect %dx%d -> %dx%d",
-                m_lastConfigOrientation, orient, m_lastContentW, m_lastContentH,
-                content_w, content_h);
-        /* wmInitReInit() re-applies the buffer geometry and recreates the EGL
-         * surface for the swapped window dimensions (preserves the GL context). */
+        /* Re-apply buffer geometry and recreate the EGL surface with the new
+         * dimensions, while preserving the GL context. */
         wmInitReInit();
         GHOST_IWindow *active = getWindowManager()->getActiveWindow();
         if (active) {
-          /* 5.3 sends BOTH: WindowSize relayouts, WindowUpdate forces a repaint.
-           * With only WindowSize the screen can stretch/reflow incorrectly. */
+          /* WindowSize relayouts the UI; WindowUpdate forces a full repaint. */
           pushEvent(processWindowEvent(GHOST_kEventWindowSize, active));
           pushEvent(processWindowEvent(GHOST_kEventWindowUpdate, active));
         }
         hasEventHandled = true;
-      }
-
-      if (orient >= 0) {
-        m_lastConfigOrientation = orient;
-      }
-      if (content_w > 0 && content_h > 0) {
-        m_lastContentW = content_w;
-        m_lastContentH = content_h;
       }
     }
 
