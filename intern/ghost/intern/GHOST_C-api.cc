@@ -224,6 +224,20 @@ void GHOST_GetMainDisplayDimensions(GHOST_SystemHandle systemhandle,
   system->getMainDisplayDimensions(*width, *height);
 }
 
+void GHOST_SetAndroidRenderScale(GHOST_SystemHandle systemhandle, float scale)
+{
+#ifdef __ANDROID__
+  GHOST_ISystem *system = (GHOST_ISystem *)systemhandle;
+  GHOST_SystemAndroid *android_system = dynamic_cast<GHOST_SystemAndroid *>(system);
+  if (android_system != nullptr) {
+    android_system->setRenderScale(scale);
+  }
+#else
+  (void)systemhandle;
+  (void)scale;
+#endif
+}
+
 void GHOST_GetAllDisplayDimensions(GHOST_SystemHandle systemhandle,
                                    uint32_t *width,
                                    uint32_t *height)

@@ -35,6 +35,7 @@ struct android_app;
 class GHOST_SystemAndroid : public GHOST_System {
 private:
     void*m_nativeWindow=nullptr;
+    float m_render_scale=1.0f;
 public:
     int32_t m_x=-1;
     int32_t m_y=-1;
@@ -49,6 +50,8 @@ public:
   /* Modifiers held by a toggle shortcut, OR'ed into getModifierKeys(). */
     int32_t latched_meta_=0;
 private:
+    void applyRenderScale(void *native_window);
+    void applyRenderScale();
     void showHidenKeyboard(bool show,
             std::string p_existing_text,
             int p_type,
@@ -167,6 +170,10 @@ public:
     void setValueOn(int values[],int num)override ;
     void setValueOff(int values[],int num)override ;
     void wmInitReInit()override ;
+
+    /** Change the native-window render scale; the EGL surface follows the resize. */
+    void setRenderScale(float scale);
+    float renderScale() const { return m_render_scale; }
     void inputKey(int p_physical_keycode,
                           int p_unicode, int p_key_label, bool p_pressed,
                           bool p_echo)override ;

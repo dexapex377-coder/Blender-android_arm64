@@ -1699,6 +1699,36 @@ void wm_ghost_init(bContext *C)
   GHOST_UseWindowFocus(wm_init_state.window_focus);
 }
 
+#ifdef __ANDROID__
+static float g_applied_android_render_scale = 1.0f;
+
+void WM_window_android_render_scale_apply(float scale)
+{
+  if (!(scale >= 1.0f && scale <= 3.0f)) {
+    scale = 1.0f;
+  }
+  if (g_system && (fabsf(scale - g_applied_android_render_scale) > 0.001f)) {
+    GHOST_SetAndroidRenderScale(g_system, scale);
+    g_applied_android_render_scale = scale;
+  }
+}
+
+void WM_window_android_render_scale_check(void)
+{
+  float scale = U.android_render_scale;
+  /* Old userpref files store 0 for this new field. */
+  if (!(scale >= 1.0f && scale <= 3.0f)) {
+    scale = 1.0f;
+    U.android_render_scale = scale;
+  }
+  WM_window_android_render_scale_apply(scale);
+}
+#else
+void WM_window_android_render_scale_check(void)
+{
+}
+#endif
+
 void wm_ghost_init_background(void)
 {
   /* TODO: move this to `wm_init_exit.cc`. */

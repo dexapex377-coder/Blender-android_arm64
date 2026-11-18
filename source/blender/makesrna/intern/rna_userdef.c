@@ -37,6 +37,7 @@
 
 #include "WM_api.h"
 #include "WM_types.h"
+#include "wm_window.h"
 
 #include "BLT_lang.h"
 
@@ -269,6 +270,18 @@ static void rna_userdef_dpi_update(Main *UNUSED(bmain),
   BLF_cache_clear();
 
   WM_main_add_notifier(NC_WINDOW, NULL);             /* full redraw */
+  WM_main_add_notifier(NC_SCREEN | NA_EDITED, NULL); /* refresh region sizes */
+  USERDEF_TAG_DIRTY;
+}
+
+static void rna_userdef_android_render_scale_update(Main *UNUSED(bmain),
+                                                    Scene *UNUSED(scene),
+                                                    PointerRNA *UNUSED(ptr))
+{
+  /* Go through the WM helper: it validates the value and resizes the native
+   * window once, without touching the EGL context. */
+  WM_window_android_render_scale_check();
+  WM_main_add_notifier(NC_WINDOW, NULL);
   WM_main_add_notifier(NC_SCREEN | NA_EDITED, NULL); /* refresh region sizes */
   USERDEF_TAG_DIRTY;
 }
@@ -5569,6 +5582,17 @@ static void rna_def_userdef_system(BlenderRNA *brna)
       "Size multiplier to use when displaying custom user interface elements, so that "
       "they are scaled correctly on screens with different DPI. This value is based "
       "on operating system DPI settings and Blender display scale");
+
+  prop = RNA_def_property(srna, "android_render_scale", PROP_FLOAT, PROP_NONE);
+  RNA_def_property_float_sdna(prop, NULL, "android_render_scale");
+  RNA_def_property_range(prop, 1.0f, 3.0f);
+  RNA_def_property_ui_range(prop, 1.0f, 2.5f, 0.1f, 2);
+  RNA_def_property_ui_text(
+      prop,
+      "Android Render Scale",
+      "Render the Android window at a lower resolution to gain FPS. "
+      "1.0 is native; 1.5 renders 44% fewer pixels, 2.0 renders 75% fewer");
+  RNA_def_property_update(prop, 0, "rna_userdef_android_render_scale_update");
 
   prop = RNA_def_property(srna, "ui_line_width", PROP_FLOAT, PROP_NONE);
   RNA_def_property_clear_flag(prop, PROP_EDITABLE);

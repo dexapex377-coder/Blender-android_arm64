@@ -215,6 +215,7 @@ void WM_init(bContext *C, int argc, const char **argv)
 
   if (!G.background) {
     wm_ghost_init(C); /* NOTE: it assigns C to ghost! */
+    WM_window_android_render_scale_check();
     wm_init_cursor_data();
     BKE_sound_jack_sync_callback_set(sound_jack_sync_callback);
   }

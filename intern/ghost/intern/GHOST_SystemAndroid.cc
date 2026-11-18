@@ -50,6 +50,26 @@ static constexpr int32_t TOUCH_SLOP_PX = 48;
  * not be turned into a right click while it travels. */
 static constexpr int32_t TOUCH_LONG_PRESS_MOVE_PX = 16;
 
+/* Render scale from Preferences > System > Android Render Scale. 1.0 = native.
+ * Android touch events arrive in native display pixels but Blender hit-tests in
+ * the reduced buffer, so every input coordinate is divided by this value. */
+static float g_render_scale = 1.0f;
+static int g_last_buffer_w = 0;
+static int g_last_buffer_h = 0;
+
+static int obl_scaled_dim(int native)
+{
+  if (g_render_scale <= 1.0f) {
+    return native;
+  }
+  return std::max(1, int(std::lround(float(native) / g_render_scale)));
+}
+
+static float obl_scale_input(float value)
+{
+  return (g_render_scale > 1.0f) ? (value / g_render_scale) : value;
+}
+
 static FILE *obl_log_fp = NULL;
 static pthread_mutex_t obl_log_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -550,8 +570,8 @@ GHOST_Event *processMouseEvent(struct android_app *app, AInputEvent *event) {
     int32_t motionaction = AMotionEvent_getAction(event);
     // CLOG_ERROR(&LOG, "交互processMouseEvent 4");
 
-    float msgPosX = AMotionEvent_getX(event, 0);    //  x坐标
-    float msgPosY = AMotionEvent_getY(event, 0);    //  y坐标
+    float msgPosX = obl_scale_input(AMotionEvent_getX(event, 0));    //  x坐标
+    float msgPosY = obl_scale_input(AMotionEvent_getY(event, 0));    //  y坐标
     // CLOG_ERROR(&LOG, "交互-----------------processMouseEvent 开始5 %d %d %f %f------------",buttonState, motionaction, msgPosX, msgPosY);
 
     system->m_x = msgPosX;
@@ -1017,8 +1037,8 @@ bool processButtonEvent(struct android_app *app, AInputEvent *event) {
     uint32_t width, height;
     system->getMainDisplayDimensions(width, height);
 
-    float msgPosX = AMotionEvent_getX(event, 0);    //  x坐标
-    float msgPosY = AMotionEvent_getY(event, 0);    //  y坐标
+    float msgPosX = obl_scale_input(AMotionEvent_getX(event, 0));    //  x坐标
+    float msgPosY = obl_scale_input(AMotionEvent_getY(event, 0));    //  y坐标
     int64_t eventTime = AMotionEvent_getEventTime(event);         //  移动事件时间 {
     //  消息来源于触摸笔（蓝牙触摸笔）
     float pressure=AMotionEvent_getPressure(event,0);
@@ -1344,13 +1364,13 @@ static int32_t engine_handle_input(struct android_app *app, AInputEvent *event) 
                             system->touchCancelPending();
                             system->m_touchPan1Active = false;
                         }
-                        float cx = (AMotionEvent_getX(event, 0) +
-                                    AMotionEvent_getX(event, 1) +
-                                    AMotionEvent_getX(event, 2)) /
+                        float cx = (obl_scale_input(AMotionEvent_getX(event, 0)) +
+                                    obl_scale_input(AMotionEvent_getX(event, 1)) +
+                                    obl_scale_input(AMotionEvent_getX(event, 2))) /
                                    3.0f;
-                        float cy = (AMotionEvent_getY(event, 0) +
-                                    AMotionEvent_getY(event, 1) +
-                                    AMotionEvent_getY(event, 2)) /
+                        float cy = (obl_scale_input(AMotionEvent_getY(event, 0)) +
+                                    obl_scale_input(AMotionEvent_getY(event, 1)) +
+                                    obl_scale_input(AMotionEvent_getY(event, 2))) /
                                    3.0f;
                         GHOST_TabletData td;
                         system->pushEvent(new GHOST_EventCursor(
@@ -1386,10 +1406,10 @@ static int32_t engine_handle_input(struct android_app *app, AInputEvent *event) 
                     if (win && pointerCount >= 2) {
                         system->touchCancelPending();
 
-                        float x0 = AMotionEvent_getX(event, 0);
-                        float y0 = AMotionEvent_getY(event, 0);
-                        float x1 = AMotionEvent_getX(event, 1);
-                        float y1 = AMotionEvent_getY(event, 1);
+                        float x0 = obl_scale_input(AMotionEvent_getX(event, 0));
+                        float y0 = obl_scale_input(AMotionEvent_getY(event, 0));
+                        float x1 = obl_scale_input(AMotionEvent_getX(event, 1));
+                        float y1 = obl_scale_input(AMotionEvent_getY(event, 1));
                         float cx = (x0 + x1) * 0.5f;
                         float cy = (y0 + y1) * 0.5f;
                         float dist = sqrtf((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0));
@@ -1495,11 +1515,11 @@ static int32_t engine_handle_input(struct android_app *app, AInputEvent *event) 
                         GHOST_WindowAndroid *win = (GHOST_WindowAndroid *)system->getWindowManager()->getActiveWindow();
                         if (win) {
                             if (actionMasked == AMOTION_EVENT_ACTION_DOWN) {
-                                system->m_scrollLastY = AMotionEvent_getY(event, 0);
+                                system->m_scrollLastY = obl_scale_input(AMotionEvent_getY(event, 0));
                                 return 1;
                             }
                             if (actionMasked == AMOTION_EVENT_ACTION_MOVE) {
-                                float y = AMotionEvent_getY(event, 0);
+                                float y = obl_scale_input(AMotionEvent_getY(event, 0));
                                 float dy = y - system->m_scrollLastY;
                                 if (dy > 10.0f) {
                                     system->pushEvent(new GHOST_EventWheel(now, win, -1));
@@ -1575,6 +1595,65 @@ GHOST_SystemAndroid::GHOST_SystemAndroid(void *nativeWindow) : GHOST_System() { 
     latched_meta_ = 0;
     struct android_app *app = (struct android_app *) m_nativeWindow;
     app->onInputEvent = engine_handle_input;
+}
+
+void GHOST_SystemAndroid::applyRenderScale(void *native_window)
+{
+  ANativeWindow *win = (ANativeWindow *)native_window;
+  if (win == nullptr) {
+    return;
+  }
+
+  struct android_app *app = (struct android_app *)m_nativeWindow;
+  int native_w = 0;
+  int native_h = 0;
+  /* contentRect is the display size and is not changed by setBuffersGeometry,
+   * so repeated scale changes cannot shrink the buffers cumulatively. */
+  if (app && app->contentRect.right > app->contentRect.left &&
+      app->contentRect.bottom > app->contentRect.top)
+  {
+    native_w = app->contentRect.right - app->contentRect.left;
+    native_h = app->contentRect.bottom - app->contentRect.top;
+  }
+  else {
+    native_w = ANativeWindow_getWidth(win);
+    native_h = ANativeWindow_getHeight(win);
+  }
+  if (native_w <= 0 || native_h <= 0) {
+    return;
+  }
+
+  const int w = obl_scaled_dim(native_w);
+  const int h = obl_scaled_dim(native_h);
+  if (w == g_last_buffer_w && h == g_last_buffer_h) {
+    return;
+  }
+  g_last_buffer_w = w;
+  g_last_buffer_h = h;
+  /* Format 0 keeps the window's current pixel format. The EGL surface follows
+   * the native window resize; recreating it here would be needlessly costly. */
+  ANativeWindow_setBuffersGeometry(win, w, h, 0);
+  __android_log_print(ANDROID_LOG_INFO, "OBL.RENDERSCALE",
+                      "native=%dx%d buffers=%dx%d scale=%.3f",
+                      native_w, native_h, w, h, g_render_scale);
+}
+
+void GHOST_SystemAndroid::applyRenderScale()
+{
+  struct android_app *app = (struct android_app *)m_nativeWindow;
+  if (app != nullptr) {
+    applyRenderScale(app->window);
+  }
+}
+
+void GHOST_SystemAndroid::setRenderScale(float scale)
+{
+  if (!(scale >= 1.0f && scale <= 3.0f)) {
+    scale = 1.0f;
+  }
+  g_render_scale = scale;
+  m_render_scale = scale;
+  applyRenderScale();
 }
 
 void GHOST_SystemAndroid::setModifierLatched(int32_t keycode, bool pressed)
@@ -1921,6 +2000,10 @@ GHOST_IWindow *GHOST_SystemAndroid::createWindow(const char *title,
         }
         aNativeWindow = app->windowWindow;
     }
+    /* A newly created ANativeWindow starts with default buffer geometry. */
+    g_last_buffer_w = 0;
+    g_last_buffer_h = 0;
+    applyRenderScale(aNativeWindow);
     GHOST_WindowAndroid *window = new GHOST_WindowAndroid(shape_type, this, title,
                                                           left,
                                                           top,
@@ -1959,13 +2042,13 @@ GHOST_SystemAndroid::getMainDisplayDimensions(uint32_t &width, uint32_t &height)
 //    height=2136;
 
     struct android_app *app = (struct android_app *) m_nativeWindow;
-    width = app->contentRect.right;
-    height = app->contentRect.bottom;
+    width = obl_scaled_dim(app->contentRect.right);
+    height = obl_scaled_dim(app->contentRect.bottom);
     OBL_log("OBL.DPI",
-        "getMainDisplayDimensions: contentRect=%d,%d,%d,%d width=%d height=%d",
+        "getMainDisplayDimensions: contentRect=%d,%d,%d,%d width=%d height=%d scale=%.3f",
         app->contentRect.left, app->contentRect.top,
         app->contentRect.right, app->contentRect.bottom,
-        width, height);
+        width, height, g_render_scale);
 }
 
 GHOST_TSuccess GHOST_SystemAndroid::setCursorPosition(int32_t x, int32_t y) {
@@ -2199,6 +2282,12 @@ void GHOST_SystemAndroid::wmInitReInit() {
      * keeping the existing EGL context alive. This preserves all GPU state. */
     struct android_app *app = (struct android_app *) m_nativeWindow;
 
+    /* Keep the reduced buffer geometry after an app restore/minimize cycle.
+     * A fresh ANativeWindow has default geometry, so force a re-apply. */
+    g_last_buffer_w = 0;
+    g_last_buffer_h = 0;
+    applyRenderScale();
+
     ANativeWindow *newWin = app->window;
     if (newWin) {
         int32_t newWidth = ANativeWindow_getWidth(newWin);
@@ -2299,12 +2388,14 @@ void GHOST_SystemAndroid::setValue(int values[], int num) {
     if (num >= 3 && values[0] == 10010) {
         /* Set cursor position (virtual cursor). */
         GHOST_WindowAndroid *win = (GHOST_WindowAndroid *) getWindowManager()->getActiveWindow();
+        const int x = int(obl_scale_input(float(values[1])));
+        const int y = int(obl_scale_input(float(values[2])));
         if (win) {
             GHOST_TabletData td;
-            pushEvent(new GHOST_EventCursor(getMilliSeconds(), GHOST_kEventCursorMove, win, values[1], values[2], td));
+            pushEvent(new GHOST_EventCursor(getMilliSeconds(), GHOST_kEventCursorMove, win, x, y, td));
         }
-        m_x = values[1];
-        m_y = values[2];
+        m_x = x;
+        m_y = y;
         return;
     }
     if (num == 1) {

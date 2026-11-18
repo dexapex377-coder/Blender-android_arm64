@@ -661,5 +661,6 @@ void Wm_loop(bContext *C)
     wm_window_process_events(C);
     wm_event_do_handlers(C);
     wm_event_do_notifiers(C);
+    WM_window_android_render_scale_check();
     wm_draw_update(C);
 }

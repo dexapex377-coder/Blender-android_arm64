@@ -107,6 +107,9 @@ void wm_cursor_position_to_ghost_screen_coords(wmWindow *win, int *x, int *y);
 void wm_cursor_position_from_ghost_client_coords(wmWindow *win, int *x, int *y);
 void wm_cursor_position_to_ghost_client_coords(wmWindow *win, int *x, int *y);
 
+/** Android only: apply the saved render-scale preference to the native window. */
+void WM_window_android_render_scale_check(void);
+
 #ifdef WITH_INPUT_IME
 void wm_window_IME_begin(wmWindow *win, int x, int y, int w, int h, bool complete);
 void wm_window_IME_end(wmWindow *win);

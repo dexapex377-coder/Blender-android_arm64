@@ -153,6 +153,13 @@ extern void GHOST_GetMainDisplayDimensions(GHOST_SystemHandle systemhandle,
                                            uint32_t *height);
 
 /**
+ * Android only: change the divisor applied to the native window size.
+ * 1.0 renders at native resolution; values above 1 reduce the buffer size
+ * and the display scales it back up. Other platforms ignore this call.
+ */
+extern void GHOST_SetAndroidRenderScale(GHOST_SystemHandle systemhandle, float scale);
+
+/**
  * Returns the dimensions of all displays combine
  * (the current workspace).
  * No need to worry about overlapping monitors.
