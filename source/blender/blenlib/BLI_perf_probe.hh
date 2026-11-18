@@ -11,6 +11,11 @@
 #pragma once
 
 #include <chrono>
+#include <stdlib.h>
+
+#ifdef __ANDROID__
+#  include <sys/system_properties.h>
+#endif
 
 namespace blender::perf {
 

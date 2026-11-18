@@ -6,6 +6,8 @@
 
 #include "workbench_private.hh"
 
+#include "BLI_perf_probe.hh"
+
 namespace blender::workbench {
 
 static bool get_matcap_tx(Texture &matcap_tx, StudioLight &studio_light)
@@ -151,9 +153,9 @@ void SceneResources::init(const SceneState &scene_state)
                              studio_light->flag & STUDIOLIGHT_SPECULAR_HIGHLIGHT_PASS;
 #ifdef __ANDROID__
     /* A/B probe: skip the 4-light specular BRDF (pow/exp2 per pixel). */
-    char value[PROP_VALUE_MAX] = {};
-    if (__system_property_get("debug.blender.workbench_no_specular", value) > 0 &&
-        value[0] != '\0' && atoi(value) != 0) {
+    static const bool no_specular_probe =
+        ::blender::perf::debug_prop_on("debug.blender.workbench_no_specular");
+    if (no_specular_probe) {
       world_buf.use_specular = false;
     }
 #endif

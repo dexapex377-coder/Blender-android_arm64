@@ -10,6 +10,8 @@
 #include <string>
 #include <android/log.h>
 
+#include "BLI_perf_probe.hh"
+
 #include "workbench_engine.h"
 #include "workbench_private.h"
 #include <CLG_log.h>
@@ -194,9 +196,8 @@ GPUShader *workbench_shader_composite_get(WORKBENCH_PrivateData *wpd)
 #ifdef __ANDROID__
   /* A/B probe: the studio-light composite evaluates 4 BRDF lights per pixel.
    * FLAT just outputs the material color. Diagnostic only (default off). */
-  char value[PROP_VALUE_MAX] = {};
-  if (__system_property_get("debug.blender.workbench_flat", value) > 0 && value[0] != '\0' &&
-      atoi(value) != 0) {
+  static const bool flat_probe = ::blender::perf::debug_prop_on("debug.blender.workbench_flat");
+  if (flat_probe) {
     light = V3D_LIGHTING_FLAT;
   }
 #endif
